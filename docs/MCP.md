@@ -139,10 +139,10 @@ tasks.update(id: string, input: {
 
 // State transitions
 // Start follows blockers to find startable work, cascades to deepest leaf
-tasks.start(id: string): Promise<Task>
+tasks.start(id: string, options?: { repoPath?: string }): Promise<Task>
 // Complete with optional result and learnings
 // Learnings bubble to immediate parent, auto-bubbles up completion if all siblings done
-tasks.complete(id: string, options?: { result?: string; learnings?: string[] }): Promise<Task>
+tasks.complete(id: string, options?: { result?: string; learnings?: string[]; repoPath?: string }): Promise<Task>
 tasks.reopen(id: string): Promise<Task>
 tasks.delete(id: string): Promise<void>
 
@@ -262,7 +262,9 @@ await tasks.complete(task.id, { result: "Login endpoint complete" });
 // -> Stores commit SHA on task
 ```
 
-**VCS is required** for `start` and `complete`. Fails with `NotARepository` if no jj/git found, `DirtyWorkingCopy` if uncommitted changes. CRUD operations (create, list, get, etc.) work without VCS.
+**VCS is required** for `start` and `complete`. Fails with `NotARepository` if no jj/git found, `DirtyWorkingCopy` if uncommitted changes. In monorepos where workspace root is not a repo, pass `repoPath` on workflow calls (absolute or relative to host cwd). CRUD operations (create, list, get, etc.) work without VCS.
+
+When provided, `repoPath` must exist and be a directory.
 
 ### Error Handling
 

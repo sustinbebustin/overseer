@@ -150,3 +150,13 @@ export class CliTimeoutError extends Error {
     this.name = "CliTimeoutError";
   }
 }
+
+export class InvalidPathError extends Error {
+  constructor(
+    message: string,
+    public pathValue: string
+  ) {
+    super(message);
+    this.name = "InvalidPathError";
+  }
+}

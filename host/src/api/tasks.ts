@@ -65,6 +65,10 @@ export interface UpdateTaskInput {
   parentId?: string;
 }
 
+export interface WorkflowRepoOptions {
+  repoPath?: string;
+}
+
 /**
  * Tasks API exposed to VM sandbox
  */
@@ -155,8 +159,10 @@ export const tasks = {
    *
    * **Requires VCS**: Must be in a jj or git repository.
    */
-  async start(id: string): Promise<Task> {
-    return decodeTask(await callCli(["task", "start", id])).unwrap("tasks.start");
+  async start(id: string, options?: WorkflowRepoOptions): Promise<Task> {
+    return decodeTask(await callCli(["task", "start", id], { cwd: options?.repoPath })).unwrap(
+      "tasks.start"
+    );
   },
 
   /**
@@ -169,7 +175,7 @@ export const tasks = {
    */
   async complete(
     id: string,
-    options?: { result?: string; learnings?: string[] }
+    options?: { result?: string; learnings?: string[]; repoPath?: string }
   ): Promise<Task> {
     const args = ["task", "complete", id];
     if (options?.result) args.push("--result", options.result);
@@ -178,7 +184,7 @@ export const tasks = {
         args.push("--learning", learning);
       }
     }
-    return decodeTask(await callCli(args)).unwrap("tasks.complete");
+    return decodeTask(await callCli(args, { cwd: options?.repoPath })).unwrap("tasks.complete");
   },
 
   /**

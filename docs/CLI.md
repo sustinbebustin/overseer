@@ -714,10 +714,29 @@ os data export --json
 Launch the Task Viewer web UI:
 
 ```bash
-os ui [--port PORT]
+os ui [--port PORT] [--cwd PATH]
 ```
 
-Opens a web browser to the task visualization interface.
+**Arguments:**
+- `--port`: HTTP port (default: 6969)
+- `--cwd`: Working directory used by host for CLI task commands (default: current dir)
+
+**Monorepo note:** If workspace root is not a git/jj repo, set `--cwd` to a child repo path for workflow operations.
+
+### `os mcp`
+
+Launch the MCP server for agent codemode execution:
+
+```bash
+os mcp [--cwd PATH]
+```
+
+**Arguments:**
+- `--cwd`: Working directory used by host for CLI task commands (default: current dir)
+
+**Monorepo note:** If workspace root is not a git/jj repo, set `--cwd` to a child repo path, or pass `repoPath` to `tasks.start`/`tasks.complete`.
+
+Starts the MCP server over stdio for agent clients.
 
 ### `os init`
 
@@ -741,6 +760,12 @@ Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`
 
 ## Database Location
 
-SQLite database stored at: `$CWD/.overseer/tasks.db`
+SQLite database default path:
+
+1. `OVERSEER_DB_PATH` if set
+2. `<VCS_ROOT>/.overseer/tasks.db` if a git/jj root is found
+3. `<CWD>/.overseer/tasks.db` fallback
+
+When using `os ui`/`os mcp`, the resolved DB path is forwarded to host and pinned for all spawned CLI commands.
 
 **Note:** Run all `os` commands from your project root where `.overseer/` directory exists.

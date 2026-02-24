@@ -127,6 +127,10 @@ Requires Node.js and the @overseer/host package.
         /// HTTP port (default: 6969)
         #[arg(long, short, default_value = "6969")]
         port: u16,
+
+        /// Working directory for host CLI commands (default: current dir)
+        #[arg(long)]
+        cwd: Option<PathBuf>,
     },
 
     /// Start the MCP server (for AI agents)
@@ -141,13 +145,17 @@ for AI agents to manage tasks programmatically.
 Requires Node.js and the @overseer/host package.
 "#
     )]
-    Mcp,
+    Mcp {
+        /// Working directory for host CLI commands (default: current dir)
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
 }
 
 /// Run the Node host server for UI or MCP mode.
 ///
 /// Resolves paths relative to the binary location and spawns Node.
-fn run_host_server(mode: &str, port: u16) {
+fn run_host_server(mode: &str, port: u16, cwd_override: Option<PathBuf>, db_path: PathBuf) {
     // Get path to current executable
     let exe_path = std::env::current_exe().unwrap_or_else(|e| {
         eprintln!("Error: cannot determine executable path: {}", e);
@@ -158,10 +166,13 @@ fn run_host_server(mode: &str, port: u16) {
     let cli_path = exe_path.to_string_lossy().to_string();
 
     // Working directory for CLI commands
-    let cwd = std::env::current_dir().unwrap_or_else(|e| {
-        eprintln!("Error: cannot determine current directory: {}", e);
-        std::process::exit(1);
-    });
+    let cwd = match cwd_override {
+        Some(path) => path,
+        None => std::env::current_dir().unwrap_or_else(|e| {
+            eprintln!("Error: cannot determine current directory: {}", e);
+            std::process::exit(1);
+        }),
+    };
 
     // Find the host package relative to the binary
     // In dev: binary is at target/release/os, host is at ../../../host/dist/index.js
@@ -191,6 +202,8 @@ fn run_host_server(mode: &str, port: u16) {
         cli_path,
         "--cwd".to_string(),
         cwd.to_string_lossy().to_string(),
+        "--db-path".to_string(),
+        db_path.to_string_lossy().to_string(),
     ];
 
     if mode == "ui" {
@@ -304,6 +317,16 @@ fn default_db_path() -> PathBuf {
     base.join(".overseer").join("tasks.db")
 }
 
+fn default_db_path_from(base_dir: &PathBuf) -> PathBuf {
+    if let Ok(path) = std::env::var("OVERSEER_DB_PATH") {
+        return PathBuf::from(path);
+    }
+
+    let (_, vcs_root) = vcs::detect_vcs_type(base_dir);
+    let base = vcs_root.unwrap_or_else(|| base_dir.clone());
+    base.join(".overseer").join("tasks.db")
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -314,12 +337,38 @@ fn main() {
     }
 
     // PRECONDITION: UI and MCP spawn Node processes, bypass normal run()
-    if let Command::Ui { port } = &cli.command {
-        run_host_server("ui", *port);
+    if let Command::Ui { port, cwd } = &cli.command {
+        let base_dir = cwd
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let db_path = match &cli.db {
+            Some(db) => {
+                if db.is_absolute() {
+                    db.clone()
+                } else {
+                    base_dir.join(db)
+                }
+            }
+            None => default_db_path_from(&base_dir),
+        };
+        run_host_server("ui", *port, cwd.clone(), db_path);
         return;
     }
-    if let Command::Mcp = &cli.command {
-        run_host_server("mcp", 0);
+    if let Command::Mcp { cwd } = &cli.command {
+        let base_dir = cwd
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let db_path = match &cli.db {
+            Some(db) => {
+                if db.is_absolute() {
+                    db.clone()
+                } else {
+                    base_dir.join(db)
+                }
+            }
+            None => default_db_path_from(&base_dir),
+        };
+        run_host_server("mcp", 0, cwd.clone(), db_path);
         return;
     }
 
@@ -431,7 +480,7 @@ fn run(command: &Command, db_path: &PathBuf) -> error::Result<String> {
         Command::Completions { .. } => unreachable!("completions handled before run()"),
         // PRECONDITION: UI and MCP handled in main() before run() is called
         Command::Ui { .. } => unreachable!("ui handled before run()"),
-        Command::Mcp => unreachable!("mcp handled before run()"),
+        Command::Mcp { .. } => unreachable!("mcp handled before run()"),
     }
 }
 

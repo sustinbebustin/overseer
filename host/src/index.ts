@@ -3,8 +3,8 @@
  * Overseer Host - Unified entry point for MCP and UI servers
  * 
  * Usage:
- *   overseer-host mcp --cli-path /path/to/os --cwd /path/to/repo
- *   overseer-host ui --cli-path /path/to/os --cwd /path/to/repo --static-root /path/to/dist --port 6969
+ *   overseer-host mcp --cli-path /path/to/os --cwd /path/to/repo --db-path /path/to/tasks.db
+ *   overseer-host ui --cli-path /path/to/os --cwd /path/to/repo --db-path /path/to/tasks.db --static-root /path/to/dist --port 6969
  */
 import { configureCli } from "./cli.js";
 import { startMcpServer } from "./mcp.js";
@@ -14,6 +14,7 @@ interface Args {
   mode: "mcp" | "ui";
   cliPath: string;
   cwd: string;
+  dbPath: string;
   // UI-specific
   staticRoot?: string;
   port?: number;
@@ -38,6 +39,7 @@ function parseArgs(argv: string[]): Args {
     mode,
     cliPath: "os",
     cwd: process.cwd(),
+    dbPath: ".overseer/tasks.db",
   };
 
   for (let i = 1; i < args.length; i++) {
@@ -59,6 +61,14 @@ function parseArgs(argv: string[]): Args {
           process.exit(1);
         }
         result.cwd = next;
+        i++;
+        break;
+      case "--db-path":
+        if (!next) {
+          console.error("--db-path requires a value");
+          process.exit(1);
+        }
+        result.dbPath = next;
         i++;
         break;
       case "--static-root":
@@ -121,14 +131,15 @@ Modes:
 Options:
   --cli-path <path>      Path to os binary (default: "os" in PATH)
   --cwd <path>           Working directory for CLI commands (default: current dir)
+  --db-path <path>       Database path passed to os --db (default: .overseer/tasks.db)
 
 UI-specific options:
   --static-root <path>   Path to static files (required for UI mode)
   --port <number>        HTTP port (default: 6969)
 
 Examples:
-  overseer-host mcp --cli-path /usr/local/bin/os --cwd /home/user/project
-  overseer-host ui --cli-path ./os --cwd . --static-root ./dist --port 8080
+  overseer-host mcp --cli-path /usr/local/bin/os --cwd /home/user/project --db-path /home/user/project/.overseer/tasks.db
+  overseer-host ui --cli-path ./os --cwd . --db-path ./.overseer/tasks.db --static-root ./dist --port 8080
 `.trim());
 }
 
@@ -139,6 +150,7 @@ async function main(): Promise<void> {
   configureCli({
     cliPath: args.cliPath,
     cwd: args.cwd,
+    dbPath: args.dbPath,
   });
 
   if (args.mode === "mcp") {

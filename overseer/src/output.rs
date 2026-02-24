@@ -246,7 +246,7 @@ impl Printer {
             Command::Completions { .. } => unreachable!("completions handled before print()"),
             // PRECONDITION: UI and MCP handled in main() before print() is called
             Command::Ui { .. } => unreachable!("ui handled before print()"),
-            Command::Mcp => unreachable!("mcp handled before print()"),
+            Command::Mcp { .. } => unreachable!("mcp handled before print()"),
         }
     }
 

@@ -85,8 +85,8 @@ declare const tasks: {
     priority?: 0 | 1 | 2;
     parentId?: string;
   }): Promise<Task>;
-  start(id: string): Promise<Task>;  // VCS required: creates bookmark, records start commit
-  complete(id: string, options?: { result?: string; learnings?: string[] }): Promise<Task>;  // VCS required: commits changes (NothingToCommit = success)
+  start(id: string, options?: { repoPath?: string }): Promise<Task>;  // VCS required: creates bookmark, records start commit
+  complete(id: string, options?: { result?: string; learnings?: string[]; repoPath?: string }): Promise<Task>;  // VCS required: commits changes (NothingToCommit = success)
   reopen(id: string): Promise<Task>;
   cancel(id: string): Promise<Task>;  // Cancel task (does NOT satisfy blockers)
   archive(id: string): Promise<Task>;  // Archive completed/cancelled task (hides from default list)
@@ -105,7 +105,7 @@ declare const learnings: {
 };
 \`\`\`
 
-**VCS Requirement:** \`start\` and \`complete\` require jj or git. Fails with NotARepository error if none found. CRUD operations work without VCS.
+**VCS Requirement:** \`start\` and \`complete\` require jj or git. Fails with NotARepository error if none found. In monorepos where root is not a repo, pass \`repoPath\` (absolute or relative to host cwd) for workflow calls. \`repoPath\` must exist and be a directory. CRUD operations work without VCS.
 
 Examples:
 
