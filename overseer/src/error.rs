@@ -91,9 +91,6 @@ pub enum OsError {
     #[error("Cannot reopen active task (task is {state}, must be completed)")]
     CannotReopenActive { state: String },
 
-    #[error("Cannot start task (task is {state}, must be pending or in-progress)")]
-    CannotStartInactive { state: String },
-
     #[error("Cannot start completed task")]
     CannotStartCompleted,
 

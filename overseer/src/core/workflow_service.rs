@@ -256,11 +256,12 @@ impl<'a> TaskWorkflowService<'a> {
         // Unified stacking semantics: both jj and git get same behavior
         // Checkout first solves git's "cannot delete checked-out branch" error
         if let Some(ref bookmark) = task.bookmark {
-            // Find checkout target: prefer start_commit, fallback to current HEAD
-            let checkout_target = task
-                .start_commit
-                .clone()
-                .or_else(|| self.vcs.current_commit_id().ok());
+            // Find checkout target: prefer current HEAD, fallback to start_commit
+            let checkout_target = self
+                .vcs
+                .current_commit_id()
+                .ok()
+                .or_else(|| task.start_commit.clone());
 
             if let Some(ref target) = checkout_target {
                 if let Err(e) = self.vcs.checkout(target) {
@@ -391,12 +392,13 @@ impl<'a> TaskWorkflowService<'a> {
         // For milestone, we need to checkout a safe commit first, then clean all descendants
         let descendants = task_repo::get_all_descendants(self.conn, id)?;
 
-        // Find checkout target: prefer milestone's start_commit, then descendant's, then HEAD
-        let checkout_target = task
-            .start_commit
-            .clone()
-            .or_else(|| descendants.iter().find_map(|d| d.start_commit.clone()))
-            .or_else(|| self.vcs.current_commit_id().ok());
+        // Find checkout target: prefer current HEAD, then milestone/descendant start_commit fallback
+        let checkout_target = self
+            .vcs
+            .current_commit_id()
+            .ok()
+            .or_else(|| task.start_commit.clone())
+            .or_else(|| descendants.iter().find_map(|d| d.start_commit.clone()));
 
         if let Some(ref target) = checkout_target {
             if let Err(e) = self.vcs.checkout(target) {

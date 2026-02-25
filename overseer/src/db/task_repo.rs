@@ -538,14 +538,15 @@ pub fn is_task_satisfies_blocker(conn: &Connection, id: &TaskId) -> Result<bool>
 }
 
 fn satisfies_blocker(conn: &Connection, id: &TaskId) -> bool {
-    conn.query_row(
-        "SELECT completed, cancelled FROM tasks WHERE id = ?1",
-        params![id],
-        |row| {
-            let completed: i32 = row.get(0)?;
-            let cancelled: i32 = row.get(1)?;
-            Ok(completed != 0 && cancelled == 0)
-        },
-    )
-    .unwrap_or(false) // Missing or errored task treated as not satisfying (blocking)
+    let task = conn
+        .query_row(
+            "SELECT * FROM tasks WHERE id = ?1",
+            params![id],
+            row_to_task,
+        )
+        .optional()
+        .ok()
+        .flatten();
+
+    task.map(|t| t.satisfies_blocker()).unwrap_or(false) // Missing or errored task treated as not satisfying (blocking)
 }
