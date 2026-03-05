@@ -1,10 +1,6 @@
 ---
 name: overseer
 description: Manage tasks via Overseer codemode MCP. Use when tracking multi-session work, breaking down implementation, or persisting context for handoffs.
-license: MIT
-metadata:
-  author: dmmulroy
-  version: "1.0.0"
 ---
 
 # Agent Coordination with Overseer
@@ -87,12 +83,6 @@ await tasks.complete(task.id, {
   result: "Implemented login endpoint with JWT tokens",
   learnings: ["bcrypt rounds should be 12 for production"]
 });
-
-// Alternative: Cancel if abandoning (does NOT satisfy blockers)
-await tasks.cancel(task.id);
-
-// 6. Archive finished tasks to hide from default list
-await tasks.archive(task.id);
 ```
 
 See @file references/workflow.md for detailed workflow guidance.

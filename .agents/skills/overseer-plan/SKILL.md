@@ -1,10 +1,6 @@
 ---
 name: overseer-plan
 description: Convert markdown planning documents to Overseer tasks via MCP codemode. Use when converting plans, specs, or design docs to trackable task hierarchies.
-license: MIT
-metadata:
-  author: dmmulroy
-  version: "1.0.0"
 ---
 
 # Converting Markdown Documents to Overseer Tasks
@@ -21,7 +17,7 @@ Use `/overseer-plan` to convert any markdown planning document into trackable Ov
 
 ```
 /overseer-plan <markdown-file-path>
-/overseer-plan <file> --priority 1           # Set priority (0-2, 0=highest)
+/overseer-plan <file> --priority 3           # Set priority (1-5)
 /overseer-plan <file> --parent <task-id>     # Create as child of existing task
 ```
 
@@ -81,7 +77,7 @@ await tasks.start("<id>");                  // Task (VCS required - creates book
 await tasks.complete("<id>", { result: "...", learnings: [...] });  // Task (VCS required - commits, bubbles learnings)
 ```
 
-**VCS Required**: `start` and `complete` require jj or git (fail with `NotARepository` if none found). CRUD operations work without VCS.
+**VCS Required**: `start` and `complete` require git (fail with `NotARepository` if none found). CRUD operations work without VCS.
 
 **Note**: Priority must be 1-5. Blockers cannot be ancestors or descendants.
 
