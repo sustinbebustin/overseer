@@ -373,6 +373,14 @@ impl VcsBackend for JjBackend {
 
         Ok(())
     }
+
+    fn current_branch_name(&self) -> VcsResult<Option<String>> {
+        Ok(None)
+    }
+
+    fn merge_fast_forward(&self, _source: &str, _target: &str) -> VcsResult<bool> {
+        Ok(true)
+    }
 }
 
 impl JjBackend {

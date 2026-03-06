@@ -33,6 +33,7 @@ interface Task {
   blocks?: string[];             // Omitted if empty
   bookmark?: string;            // VCS bookmark name (if started)
   startCommit?: string;         // Commit SHA at start
+  baseRef?: string;             // Branch captured at start (git)
   effectivelyBlocked: boolean;  // True if task OR ancestor has incomplete blockers
   cancelled: boolean;           // Task was cancelled (does NOT satisfy blockers)
   cancelledAt: string | null;

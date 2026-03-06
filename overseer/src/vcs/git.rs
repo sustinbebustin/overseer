@@ -5,8 +5,8 @@ use chrono::{TimeZone, Utc};
 use gix::bstr::ByteSlice;
 
 use crate::vcs::backend::{
-    ChangeType, CommitResult, DiffEntry, FileStatus, FileStatusKind, LogEntry, VcsBackend,
-    VcsError, VcsResult, VcsStatus, VcsType,
+    is_fast_forward_rejected_message, ChangeType, CommitResult, DiffEntry, FileStatus,
+    FileStatusKind, LogEntry, VcsBackend, VcsError, VcsResult, VcsStatus, VcsType,
 };
 
 pub struct GixBackend {
@@ -385,21 +385,7 @@ impl VcsBackend for GixBackend {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // Try force delete if branch is not fully merged
-            if stderr.contains("not fully merged") {
-                let output = Command::new("git")
-                    .args(["branch", "-D", name])
-                    .current_dir(&self.root)
-                    .output()
-                    .map_err(|e| VcsError::Git(format!("failed to run git branch -D: {e}")))?;
-
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    return Err(VcsError::Git(format!("git branch -D failed: {stderr}")));
-                }
-            } else {
-                return Err(VcsError::Git(format!("git branch -d failed: {stderr}")));
-            }
+            return Err(VcsError::Git(format!("git branch -d failed: {stderr}")));
         }
 
         Ok(())
@@ -454,13 +440,92 @@ impl VcsBackend for GixBackend {
 
         Ok(())
     }
+
+    fn current_branch_name(&self) -> VcsResult<Option<String>> {
+        let branch_output = Command::new("git")
+            .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+            .current_dir(&self.root)
+            .output()
+            .map_err(|e| VcsError::Git(format!("failed to run git symbolic-ref: {e}")))?;
+
+        if !branch_output.status.success() {
+            let rev_output = Command::new("git")
+                .args(["rev-parse", "--verify", "HEAD"])
+                .current_dir(&self.root)
+                .output()
+                .map_err(|e| VcsError::Git(format!("failed to run git rev-parse: {e}")))?;
+
+            if rev_output.status.success() {
+                return Err(VcsError::DetachedHead);
+            }
+            return Err(VcsError::UnbornRepository);
+        }
+
+        let branch_name = String::from_utf8_lossy(&branch_output.stdout)
+            .trim()
+            .to_string();
+        if branch_name.is_empty() {
+            return Err(VcsError::DetachedHead);
+        }
+
+        let rev_output = Command::new("git")
+            .args(["rev-parse", "--verify", "HEAD"])
+            .current_dir(&self.root)
+            .output()
+            .map_err(|e| VcsError::Git(format!("failed to run git rev-parse: {e}")))?;
+
+        if !rev_output.status.success() {
+            return Err(VcsError::UnbornRepository);
+        }
+
+        Ok(Some(branch_name))
+    }
+
+    fn merge_fast_forward(&self, source: &str, target: &str) -> VcsResult<bool> {
+        self.checkout(target)?;
+
+        let merge_output = Command::new("git")
+            .args(["merge", "--ff-only", source])
+            .current_dir(&self.root)
+            .output()
+            .map_err(|e| VcsError::Git(format!("failed to run git merge --ff-only: {e}")))?;
+
+        if merge_output.status.success() {
+            return Ok(true);
+        }
+
+        let stderr = String::from_utf8_lossy(&merge_output.stderr);
+        let stdout = String::from_utf8_lossy(&merge_output.stdout);
+        let combined = format!("{}\n{}", stderr.trim(), stdout.trim());
+        let normalized = combined.to_ascii_lowercase();
+
+        let _ = self.checkout(source);
+
+        if is_fast_forward_rejected_message(&normalized) {
+            return Ok(false);
+        }
+
+        Err(VcsError::Git(format!(
+            "git merge --ff-only failed: {}",
+            combined.trim()
+        )))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutil::{GitTestRepo, TestRepo};
-    use crate::vcs::backend::VcsType;
+    use crate::vcs::backend::{is_fast_forward_rejected_message, VcsType};
+
+    fn current_branch(repo: &GitTestRepo) -> String {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
 
     #[test]
     fn test_open_git_repo() {
@@ -725,5 +790,113 @@ mod tests {
             !backend.is_clean().unwrap(),
             "is_clean should return false with staged changes"
         );
+    }
+
+    #[test]
+    fn test_current_branch_name_returns_branch() {
+        let repo = GitTestRepo::new().unwrap();
+        repo.commit("initial commit").unwrap();
+
+        let backend = GixBackend::open(repo.path()).unwrap();
+        let branch = backend.current_branch_name().unwrap();
+        assert_eq!(branch.as_deref(), Some(current_branch(&repo).as_str()));
+    }
+
+    #[test]
+    fn test_merge_fast_forward_success() {
+        let repo = GitTestRepo::new().unwrap();
+        repo.write_file("base.txt", "base").unwrap();
+        repo.commit("initial commit").unwrap();
+        let base_branch = current_branch(&repo);
+
+        std::process::Command::new("git")
+            .args(["checkout", "-b", "task/test"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+
+        repo.write_file("task.txt", "task").unwrap();
+        repo.commit("task commit").unwrap();
+
+        let backend = GixBackend::open(repo.path()).unwrap();
+        let merged = backend
+            .merge_fast_forward("task/test", &base_branch)
+            .unwrap();
+        assert!(merged);
+    }
+
+    #[test]
+    fn test_merge_fast_forward_returns_false_on_divergence() {
+        let repo = GitTestRepo::new().unwrap();
+        repo.write_file("base.txt", "base").unwrap();
+        repo.commit("initial commit").unwrap();
+        let base_branch = current_branch(&repo);
+
+        std::process::Command::new("git")
+            .args(["checkout", "-b", "task/test"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        repo.write_file("task.txt", "task").unwrap();
+        repo.commit("task commit").unwrap();
+
+        std::process::Command::new("git")
+            .args(["checkout", &base_branch])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        repo.write_file("base2.txt", "base2").unwrap();
+        repo.commit("base commit").unwrap();
+
+        let backend = GixBackend::open(repo.path()).unwrap();
+        let merged = backend
+            .merge_fast_forward("task/test", &base_branch)
+            .unwrap();
+        assert!(!merged);
+    }
+
+    #[test]
+    fn test_delete_bookmark_rejects_unmerged_branch_without_force_delete() {
+        let repo = GitTestRepo::new().unwrap();
+        repo.write_file("base.txt", "base").unwrap();
+        repo.commit("initial commit").unwrap();
+        let base_branch = current_branch(&repo);
+
+        std::process::Command::new("git")
+            .args(["checkout", "-b", "task/test"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        repo.write_file("task.txt", "task").unwrap();
+        repo.commit("task commit").unwrap();
+
+        std::process::Command::new("git")
+            .args(["checkout", &base_branch])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+
+        let backend = GixBackend::open(repo.path()).unwrap();
+        let result = backend.delete_bookmark("task/test");
+        assert!(result.is_err());
+
+        let list_output = std::process::Command::new("git")
+            .args(["branch", "--list", "task/test"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        let branch_line = String::from_utf8_lossy(&list_output.stdout);
+        assert!(branch_line.contains("task/test"));
+    }
+
+    #[test]
+    fn test_fast_forward_rejected_message_match() {
+        assert!(is_fast_forward_rejected_message(
+            "fatal: Not possible to fast-forward, aborting."
+        ));
+        assert!(is_fast_forward_rejected_message(
+            "merge is not possible to fast-forward"
+        ));
+        assert!(!is_fast_forward_rejected_message("already up to date"));
     }
 }

@@ -37,6 +37,7 @@ pub struct ExportTask {
     pub updated_at: chrono::DateTime<chrono::Utc>,
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     pub commit_sha: Option<String>,
+    pub base_ref: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -104,6 +105,7 @@ pub(crate) fn export_data(conn: &Connection, output: Option<PathBuf>) -> Result<
                     updated_at: full_task.updated_at,
                     started_at: full_task.started_at,
                     commit_sha: full_task.commit_sha,
+                    base_ref: full_task.base_ref,
                 })
         })
         .collect();

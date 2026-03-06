@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use crate::error::Result;
 
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 
 pub fn init_schema(conn: &Connection) -> Result<()> {
     let current_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -25,6 +25,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
                 started_at TEXT,
                 bookmark TEXT,
                 start_commit TEXT,
+                base_ref TEXT,
                 cancelled INTEGER NOT NULL DEFAULT 0,
                 cancelled_at TEXT,
                 archived INTEGER NOT NULL DEFAULT 0,
@@ -142,6 +143,19 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )?;
         conn.pragma_update(None, "user_version", 5)?;
         version = 5;
+    }
+
+    // Migration for version 5 -> 6: add base_ref for git-safe integration
+    if version == 5 {
+        conn.execute_batch(
+            r#"
+            BEGIN;
+            ALTER TABLE tasks ADD COLUMN base_ref TEXT;
+            COMMIT;
+            "#,
+        )?;
+        conn.pragma_update(None, "user_version", 6)?;
+        version = 6;
     }
 
     // Suppress unused variable warning - version is used for sequential migration chaining

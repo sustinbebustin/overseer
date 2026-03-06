@@ -62,6 +62,9 @@ struct TreeTask {
     cancelled: bool,
     #[serde(default)]
     archived: bool,
+    #[serde(default)]
+    #[allow(dead_code)]
+    base_ref: Option<String>,
 }
 
 /// Tree structure for display

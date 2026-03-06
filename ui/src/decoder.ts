@@ -139,6 +139,7 @@ export function decodeTask(v: unknown): Result<Task, DecodeError> {
     blocks,
     bookmark,
     startCommit,
+    baseRef,
     effectivelyBlocked,
     cancelled,
     cancelledAt,
@@ -235,6 +236,9 @@ export function decodeTask(v: unknown): Result<Task, DecodeError> {
   if (startCommit !== undefined && !isString(startCommit)) {
     return Result.err(new DecodeError({ message: "Task startCommit must be string" }));
   }
+  if (baseRef !== undefined && !isString(baseRef)) {
+    return Result.err(new DecodeError({ message: "Task baseRef must be string" }));
+  }
 
   const task: Task = {
     id: id as TaskId,
@@ -260,6 +264,7 @@ export function decodeTask(v: unknown): Result<Task, DecodeError> {
   if (decodedBlocks) task.blocks = decodedBlocks;
   if (bookmark !== undefined) task.bookmark = bookmark as string;
   if (startCommit !== undefined) task.startCommit = startCommit as string;
+  if (baseRef !== undefined) task.baseRef = baseRef as string;
 
   return Result.ok(task);
 }

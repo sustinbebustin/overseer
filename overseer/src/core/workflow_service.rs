@@ -5,7 +5,7 @@ use crate::db::task_repo;
 use crate::error::{NotReadyReason, OsError, Result};
 use crate::id::TaskId;
 use crate::types::Task;
-use crate::vcs::backend::{VcsBackend, VcsError};
+use crate::vcs::backend::{VcsBackend, VcsError, VcsType};
 
 /// Coordinates task state transitions with VCS operations.
 ///
@@ -39,6 +39,10 @@ impl<'a> TaskWorkflowService<'a> {
 
     pub fn start(&self, id: &TaskId) -> Result<Task> {
         let task = self.task_service.get(id)?;
+        let bookmark = task
+            .bookmark
+            .clone()
+            .unwrap_or_else(|| format!("task/{}", id));
 
         // Guard: cannot start non-active tasks (cancelled, completed, archived)
         // This check MUST come before the idempotent path to prevent starting
@@ -58,6 +62,21 @@ impl<'a> TaskWorkflowService<'a> {
 
         // Idempotent: already started with VCS state
         if task.started_at.is_some() && task.bookmark.is_some() {
+            let idempotent_base_ref =
+                if task.base_ref.is_none() && self.vcs.vcs_type() == VcsType::Git {
+                    Some(self.current_git_branch_name()?)
+                } else {
+                    None
+                };
+
+            if task.base_ref.is_none() {
+                if let Some(ref inferred_base_ref) = idempotent_base_ref {
+                    if inferred_base_ref != &bookmark {
+                        task_repo::set_base_ref(self.conn, id, inferred_base_ref)?;
+                    }
+                }
+            }
+
             // Just checkout the existing bookmark
             if let Some(ref bookmark) = task.bookmark {
                 self.vcs.checkout(bookmark)?;
@@ -68,10 +87,10 @@ impl<'a> TaskWorkflowService<'a> {
         // Validate: must be the next ready task in its subtree
         self.validate_start_target(id, &task)?;
 
-        let bookmark = task
-            .bookmark
-            .clone()
-            .unwrap_or_else(|| format!("task/{}", id));
+        let base_ref = match self.vcs.vcs_type() {
+            VcsType::Git => Some(self.current_git_branch_name()?),
+            _ => None,
+        };
 
         // 1. Ensure bookmark exists (idempotent)
         match self.vcs.create_bookmark(&bookmark, None) {
@@ -88,6 +107,9 @@ impl<'a> TaskWorkflowService<'a> {
         // 4. DB updates (after VCS succeeds)
         task_repo::set_bookmark(self.conn, id, &bookmark)?;
         task_repo::set_start_commit(self.conn, id, &sha)?;
+        if let Some(ref base_ref_value) = base_ref {
+            task_repo::set_base_ref(self.conn, id, base_ref_value)?;
+        }
 
         if task.started_at.is_none() {
             self.task_service.start(id)?;
@@ -194,6 +216,38 @@ impl<'a> TaskWorkflowService<'a> {
         Ok(())
     }
 
+    fn current_git_branch_name(&self) -> Result<String> {
+        let name = self
+            .vcs
+            .current_branch_name()?
+            .ok_or(OsError::CannotStartDetachedHead)?;
+        Ok(name)
+    }
+
+    fn enforce_git_integration_gate(&self, task: &Task, id: &TaskId) -> Result<()> {
+        if self.vcs.vcs_type() != VcsType::Git {
+            return Ok(());
+        }
+
+        if let Some(bookmark) = task.bookmark.clone() {
+            let Some(base_ref) = task.base_ref.clone() else {
+                return Err(OsError::MissingBaseRef {
+                    task_id: id.clone(),
+                });
+            };
+            let merged = self.vcs.merge_fast_forward(&bookmark, &base_ref)?;
+            if !merged {
+                return Err(OsError::TaskIntegrationRequired {
+                    task_id: id.clone(),
+                    source_ref: bookmark,
+                    base_ref,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     /// Start a task, following blockers to find startable work.
     ///
     /// If the requested task or any of its descendants are blocked,
@@ -246,6 +300,8 @@ impl<'a> TaskWorkflowService<'a> {
             Ok(_) | Err(VcsError::NothingToCommit) => {}
             Err(e) => return Err(e.into()),
         }
+
+        self.enforce_git_integration_gate(&task, id)?;
 
         // 2. DB updates (after VCS succeeds)
         let completed_task = self
@@ -354,21 +410,9 @@ impl<'a> TaskWorkflowService<'a> {
             return Ok(task);
         }
 
-        // Not a milestone - delegate to regular complete (avoid infinite recursion)
+        // Not a milestone - delegate to regular complete
         if task.depth != Some(0) {
-            // 1. VCS first - commit (NothingToCommit is OK)
-            let msg = format!("Complete: {}\n\n{}", task.description, result.unwrap_or(""));
-            match self.vcs.commit(&msg) {
-                Ok(_) | Err(VcsError::NothingToCommit) => {}
-                Err(e) => return Err(e.into()),
-            }
-
-            // 2. DB updates (after VCS succeeds)
-            let completed_task = self
-                .task_service
-                .complete_with_learnings(id, result, learnings)?;
-
-            return Ok(completed_task);
+            return self.complete_with_learnings(id, result, learnings);
         }
 
         // Milestone: VCS first - commit (NothingToCommit is OK)
@@ -381,6 +425,8 @@ impl<'a> TaskWorkflowService<'a> {
             Ok(_) | Err(VcsError::NothingToCommit) => {}
             Err(e) => return Err(e.into()),
         }
+
+        self.enforce_git_integration_gate(&task, id)?;
 
         // DB updates (after VCS succeeds)
         let completed_task = self
@@ -456,8 +502,27 @@ mod tests {
         conn
     }
 
-    /// Mock VCS backend for tests - all operations succeed with minimal side effects.
-    struct MockVcsBackend;
+    #[derive(Clone)]
+    enum BranchMode {
+        Named(String),
+        DetachedHead,
+        Unborn,
+    }
+
+    /// Mock VCS backend for tests - configurable branch + merge behavior.
+    struct MockVcsBackend {
+        branch_mode: BranchMode,
+        merge_result: bool,
+    }
+
+    impl Default for MockVcsBackend {
+        fn default() -> Self {
+            Self {
+                branch_mode: BranchMode::Named("main".to_string()),
+                merge_result: true,
+            }
+        }
+    }
 
     impl VcsBackend for MockVcsBackend {
         fn vcs_type(&self) -> VcsType {
@@ -499,10 +564,20 @@ mod tests {
         fn checkout(&self, _target: &str) -> VcsResult<()> {
             Ok(())
         }
+        fn current_branch_name(&self) -> VcsResult<Option<String>> {
+            match &self.branch_mode {
+                BranchMode::Named(name) => Ok(Some(name.clone())),
+                BranchMode::DetachedHead => Err(VcsError::DetachedHead),
+                BranchMode::Unborn => Err(VcsError::UnbornRepository),
+            }
+        }
+        fn merge_fast_forward(&self, _source: &str, _target: &str) -> VcsResult<bool> {
+            Ok(self.merge_result)
+        }
     }
 
     fn mock_vcs() -> Box<dyn VcsBackend> {
-        Box::new(MockVcsBackend)
+        Box::new(MockVcsBackend::default())
     }
 
     #[test]
@@ -525,6 +600,158 @@ mod tests {
         assert!(started.started_at.is_some());
         assert!(started.bookmark.is_some());
         assert!(started.start_commit.is_some());
+        assert_eq!(started.base_ref.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn test_start_fails_on_detached_head() {
+        let conn = setup_db();
+        let service = TaskWorkflowService::new(
+            &conn,
+            Box::new(MockVcsBackend {
+                branch_mode: BranchMode::DetachedHead,
+                merge_result: true,
+            }),
+        );
+
+        let task = service
+            .task_service()
+            .create(&CreateTaskInput {
+                description: "Test task".to_string(),
+                context: None,
+                parent_id: None,
+                priority: None,
+                blocked_by: vec![],
+            })
+            .unwrap();
+
+        let result = service.start(&task.id);
+        assert!(matches!(result, Err(OsError::CannotStartDetachedHead)));
+    }
+
+    #[test]
+    fn test_start_fails_on_unborn_repo() {
+        let conn = setup_db();
+        let service = TaskWorkflowService::new(
+            &conn,
+            Box::new(MockVcsBackend {
+                branch_mode: BranchMode::Unborn,
+                merge_result: true,
+            }),
+        );
+
+        let task = service
+            .task_service()
+            .create(&CreateTaskInput {
+                description: "Test task".to_string(),
+                context: None,
+                parent_id: None,
+                priority: None,
+                blocked_by: vec![],
+            })
+            .unwrap();
+
+        let result = service.start(&task.id);
+        assert!(matches!(result, Err(OsError::CannotStartUnbornRepository)));
+    }
+
+    #[test]
+    fn test_complete_returns_missing_base_ref_when_started_task_has_none() {
+        let conn = setup_db();
+        let task_service = TaskService::new(&conn);
+
+        let task = task_service
+            .create(&CreateTaskInput {
+                description: "Test task".to_string(),
+                context: None,
+                parent_id: None,
+                priority: None,
+                blocked_by: vec![],
+            })
+            .unwrap();
+
+        task_service.start(&task.id).unwrap();
+        task_repo::set_bookmark(&conn, &task.id, &format!("task/{}", task.id)).unwrap();
+        task_repo::set_start_commit(&conn, &task.id, "mock-commit-id").unwrap();
+
+        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let result = service.complete_with_learnings(&task.id, None, &[]);
+        assert!(matches!(
+            result,
+            Err(OsError::MissingBaseRef { task_id }) if task_id == task.id
+        ));
+    }
+
+    #[test]
+    fn test_complete_returns_integration_required_on_ff_failure() {
+        let conn = setup_db();
+        let task_service = TaskService::new(&conn);
+
+        let task = task_service
+            .create(&CreateTaskInput {
+                description: "Test task".to_string(),
+                context: None,
+                parent_id: None,
+                priority: None,
+                blocked_by: vec![],
+            })
+            .unwrap();
+
+        task_service.start(&task.id).unwrap();
+        let bookmark = format!("task/{}", task.id);
+        task_repo::set_bookmark(&conn, &task.id, &bookmark).unwrap();
+        task_repo::set_start_commit(&conn, &task.id, "mock-commit-id").unwrap();
+        task_repo::set_base_ref(&conn, &task.id, "main").unwrap();
+
+        let service = TaskWorkflowService::new(
+            &conn,
+            Box::new(MockVcsBackend {
+                branch_mode: BranchMode::Named("main".to_string()),
+                merge_result: false,
+            }),
+        );
+
+        let result = service.complete_with_learnings(&task.id, None, &[]);
+        assert!(matches!(
+            result,
+            Err(OsError::TaskIntegrationRequired { task_id, source_ref, base_ref })
+                if task_id == task.id && source_ref == bookmark && base_ref == "main"
+        ));
+
+        let task_after = task_service.get(&task.id).unwrap();
+        assert!(!task_after.completed);
+    }
+
+    #[test]
+    fn test_start_backfills_base_ref_for_legacy_started_task() {
+        let conn = setup_db();
+        let task_service = TaskService::new(&conn);
+
+        let task = task_service
+            .create(&CreateTaskInput {
+                description: "Test task".to_string(),
+                context: None,
+                parent_id: None,
+                priority: None,
+                blocked_by: vec![],
+            })
+            .unwrap();
+
+        task_service.start(&task.id).unwrap();
+        let bookmark = format!("task/{}", task.id);
+        task_repo::set_bookmark(&conn, &task.id, &bookmark).unwrap();
+        task_repo::set_start_commit(&conn, &task.id, "mock-commit-id").unwrap();
+
+        let service = TaskWorkflowService::new(
+            &conn,
+            Box::new(MockVcsBackend {
+                branch_mode: BranchMode::Named("feature/base".to_string()),
+                merge_result: true,
+            }),
+        );
+
+        let started = service.start(&task.id).unwrap();
+        assert_eq!(started.base_ref.as_deref(), Some("feature/base"));
     }
 
     #[test]

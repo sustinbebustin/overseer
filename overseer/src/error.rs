@@ -97,6 +97,22 @@ pub enum OsError {
     #[error("Cannot start cancelled task")]
     CannotStartCancelled,
 
+    #[error("Cannot start from detached HEAD in git repository")]
+    CannotStartDetachedHead,
+
+    #[error("Cannot start in git repository without any commits")]
+    CannotStartUnbornRepository,
+
+    #[error("Task integration required before completion: merge {source_ref} into {base_ref} for task {task_id}")]
+    TaskIntegrationRequired {
+        task_id: TaskId,
+        source_ref: String,
+        base_ref: String,
+    },
+
+    #[error("Missing baseRef for started task: {task_id}")]
+    MissingBaseRef { task_id: TaskId },
+
     #[error("Cannot complete cancelled task")]
     CannotCompleteCancelled,
 
@@ -130,6 +146,8 @@ impl From<VcsError> for OsError {
         match err {
             VcsError::NotARepository => OsError::NotARepository,
             VcsError::DirtyWorkingCopy => OsError::DirtyWorkingCopy,
+            VcsError::DetachedHead => OsError::CannotStartDetachedHead,
+            VcsError::UnbornRepository => OsError::CannotStartUnbornRepository,
             other => OsError::Vcs(other),
         }
     }

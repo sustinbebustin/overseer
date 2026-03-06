@@ -84,6 +84,7 @@ export interface Task {
   blocks?: TaskId[];
   bookmark?: string;
   startCommit?: string;
+  baseRef?: string;
   /** Computed: true if task or any ancestor has incomplete blockers */
   effectivelyBlocked: boolean;
   /** Task was cancelled (abandoned without completion) */

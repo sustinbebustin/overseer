@@ -28,6 +28,12 @@ pub enum VcsError {
     #[error("Working copy has uncommitted changes")]
     DirtyWorkingCopy,
 
+    #[error("Cannot start in detached HEAD state")]
+    DetachedHead,
+
+    #[error("Cannot start in repository without commits")]
+    UnbornRepository,
+
     #[error("JJ error: {0}")]
     Jj(String),
 
@@ -36,6 +42,12 @@ pub enum VcsError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+pub fn is_fast_forward_rejected_message(text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase();
+    normalized.contains("not possible to fast-forward")
+        || normalized.contains("is not possible to fast-forward")
 }
 
 pub type VcsResult<T> = Result<T, VcsError>;
@@ -134,6 +146,10 @@ pub trait VcsBackend: Send + Sync {
 
     // Navigation
     fn checkout(&self, target: &str) -> VcsResult<()>;
+
+    // Branch metadata and integration
+    fn current_branch_name(&self) -> VcsResult<Option<String>>;
+    fn merge_fast_forward(&self, source: &str, target: &str) -> VcsResult<bool>;
 
     // Working copy safety
     fn is_clean(&self) -> VcsResult<bool> {

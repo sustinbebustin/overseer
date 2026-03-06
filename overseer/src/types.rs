@@ -65,6 +65,8 @@ pub struct Task {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_commit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub depth: Option<i32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocked_by: Vec<TaskId>,

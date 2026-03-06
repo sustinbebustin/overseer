@@ -59,8 +59,8 @@ export function parseLearningId(s: string): LearningId {
 
 // ============ Domain Types ============
 
-/** Priority levels (enforced by Rust, 1-5) */
-export type Priority = 1 | 2 | 3 | 4 | 5;
+/** Priority levels: p0=highest, p1=default, p2=lowest */
+export type Priority = 0 | 1 | 2;
 
 /** Task depth (0=milestone, 1=task, 2=subtask) */
 export type Depth = 0 | 1 | 2;
@@ -112,8 +112,17 @@ export interface Task {
   blocks?: TaskId[];
   bookmark?: string;
   startCommit?: string;
+  baseRef?: string;
   /** Computed: true if task or any ancestor has incomplete blockers */
   effectivelyBlocked: boolean;
+  /** Task was cancelled (abandoned without completion) */
+  cancelled: boolean;
+  /** Timestamp when task was cancelled */
+  cancelledAt: string | null;
+  /** Task is archived (hidden from default views) */
+  archived: boolean;
+  /** Timestamp when task was archived */
+  archivedAt: string | null;
 }
 
 /**

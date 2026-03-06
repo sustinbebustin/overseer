@@ -43,6 +43,7 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         commit_sha: row.get("commit_sha")?,
         bookmark: row.get("bookmark")?,
         start_commit: row.get("start_commit")?,
+        base_ref: row.get("base_ref")?,
         depth: None,
         blocked_by: Vec::new(),
         blocks: Vec::new(),
@@ -133,20 +134,20 @@ pub fn list_tasks(conn: &Connection, filter: &ListTasksFilter) -> Result<Vec<Tas
             r#"
             WITH RECURSIVE task_depths AS (
                 SELECT id, parent_id, description, context, result, priority, completed,
-                       completed_at, created_at, updated_at, started_at, commit_sha, bookmark, start_commit,
+                       completed_at, created_at, updated_at, started_at, commit_sha, bookmark, start_commit, base_ref,
                        cancelled, cancelled_at, archived, archived_at,
                        0 as depth
                 FROM tasks WHERE parent_id IS NULL
                 UNION ALL
                 SELECT t.id, t.parent_id, t.description, t.context, t.result, t.priority, t.completed,
-                       t.completed_at, t.created_at, t.updated_at, t.started_at, t.commit_sha, t.bookmark, t.start_commit,
+                       t.completed_at, t.created_at, t.updated_at, t.started_at, t.commit_sha, t.bookmark, t.start_commit, t.base_ref,
                        t.cancelled, t.cancelled_at, t.archived, t.archived_at,
                        td.depth + 1
                 FROM tasks t
                 INNER JOIN task_depths td ON t.parent_id = td.id
             )
             SELECT id, parent_id, description, context, result, priority, completed,
-                   completed_at, created_at, updated_at, started_at, commit_sha, bookmark, start_commit,
+                   completed_at, created_at, updated_at, started_at, commit_sha, bookmark, start_commit, base_ref,
                    cancelled, cancelled_at, archived, archived_at
             FROM task_depths WHERE 1=1
             "#,
@@ -409,6 +410,15 @@ pub fn set_start_commit(conn: &Connection, id: &TaskId, start_commit: &str) -> R
     conn.execute(
         "UPDATE tasks SET start_commit = ?1, updated_at = ?2 WHERE id = ?3",
         params![start_commit, now_str, id],
+    )?;
+    Ok(())
+}
+
+pub fn set_base_ref(conn: &Connection, id: &TaskId, base_ref: &str) -> Result<()> {
+    let now_str = now().to_rfc3339();
+    conn.execute(
+        "UPDATE tasks SET base_ref = ?1, updated_at = ?2 WHERE id = ?3",
+        params![base_ref, now_str, id],
     )?;
     Ok(())
 }
