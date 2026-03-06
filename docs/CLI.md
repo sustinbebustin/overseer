@@ -155,6 +155,8 @@ os task start TASK_ID
 - Cascades down to deepest incomplete leaf
 - Creates VCS bookmark for started task
 - Records start commit (`startCommit` field)
+- In git mode records base branch (`baseRef` field)
+- In git mode fails on detached HEAD (`CannotStartDetachedHead`) and unborn repos (`CannotStartUnbornRepository`)
 - Returns the task that was actually started
 
 **Algorithm:**
@@ -189,6 +191,9 @@ os task complete TASK_ID [--result "Completion notes"] [--learning "..."]...
 - **VCS required** - fails with `NotARepository` if no jj/git
 - Sets `status = completed`, `completed_at = now()`
 - Commits changes (NothingToCommit treated as success)
+- In git mode requires fast-forward merge from task branch into `baseRef` before DB completion
+- On ff failure returns `TaskIntegrationRequired` and leaves task incomplete/in-progress
+- On legacy started tasks without `baseRef` returns `MissingBaseRef`
 - Fails if task has pending children
 - Optional `--result` stores completion notes
 - **Bubble-up:** Auto-completes parent if all siblings done and parent unblocked

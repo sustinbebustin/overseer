@@ -132,8 +132,9 @@ Workflow ops fail with `NotARepository` if no VCS found, or `DirtyWorkingCopy` o
 1. **Validate** task is startable (not blocked, is next-ready target)
 2. **Create bookmark** (idempotent - tolerates "already exists")
 3. **Checkout** bookmark
-4. **Record** `start_commit` SHA
-5. **Persist** bookmark name + timestamps in DB
+4. **Capture** git branch name as `base_ref` (git only; detached/unborn fail start)
+5. **Record** `start_commit` SHA
+6. **Persist** bookmark name + timestamps in DB
 6. **Bubble `started_at`** to ancestors (timestamps only, no bookmarks)
 
 **Idempotency:** If `started_at` + `bookmark` already set, just checkout.
@@ -143,10 +144,11 @@ Workflow ops fail with `NotARepository` if no VCS found, or `DirtyWorkingCopy` o
 `complete(id, { result?, learnings? })` performs in order:
 
 1. **VCS commit** (NothingToCommit = success)
-2. **Mark complete** in DB + attach learnings
-3. **Bubble learnings** to immediate parent
-4. **Delete bookmark** (best-effort; clear DB field only on success)
-5. **Auto-complete ancestors** if all children done and unblocked
+2. **Git integration gate:** `merge --ff-only` from task bookmark into `base_ref` (fail-closed)
+3. **Mark complete** in DB + attach learnings
+4. **Bubble learnings** to immediate parent
+5. **Delete bookmark** (best-effort; clear DB field only on success)
+6. **Auto-complete ancestors** if all children done and unblocked
 
 **Important:** Auto-completing parents is DB-only (no extra commit). Milestone completion does run commit logic.
 
@@ -211,8 +213,8 @@ Walk up from cwd:
 
 | Operation | VCS Action |
 |-----------|------------|
-| start | `create_bookmark`, `checkout`, `current_commit_id` |
-| complete | `commit`, `delete_bookmark` (best-effort) |
+| start | `current_branch_name` (git), `create_bookmark`, `checkout`, `current_commit_id` |
+| complete | `commit`, `merge_fast_forward` (git), `delete_bookmark` (best-effort) |
 | delete | `delete_bookmark` (best-effort) |
 
 ## Public Surfaces

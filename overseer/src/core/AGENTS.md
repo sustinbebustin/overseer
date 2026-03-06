@@ -63,13 +63,14 @@ On task completion with learnings:
 4. DB mutation
 
 ### VCS Integration (workflow_service.rs)
-- `start()`: VCS required - creates bookmark/branch, records start commit
-- `complete_with_learnings()`: VCS required - commits changes (NothingToCommit = success), adds learnings, checkouts start_commit, deletes bookmark/branch (best-effort)
+- `start()`: VCS required - creates bookmark/branch, records start commit, and in git records `base_ref`
+- `complete_with_learnings()`: VCS required - commits changes (NothingToCommit = success), in git enforces fast-forward integration to `base_ref` before DB completion, then performs best-effort bookmark cleanup
 - `complete_milestone_with_learnings()`: Same + deletes ALL descendant bookmarks/branches recursively
 - Transaction order: VCS ops first, then DB state update
-- **Unified stacking semantics**: Both jj and git get identical behavior
-  - On complete: checkout `start_commit` → delete bookmark/branch
-  - Solves git's "cannot delete checked-out branch" error
+- **Git-safe completion semantics**:
+  - Git completion fails closed on non-ff (`TaskIntegrationRequired`) and preserves task branch
+  - Legacy started git task missing `base_ref` fails with `MissingBaseRef` until repaired
+  - Cleanup remains best-effort after successful completion
 - Bookmark cleanup: best-effort deletion, logs warning on failure, clears DB field on success
 - Errors: `NotARepository` (no jj/git), `DirtyWorkingCopy` (uncommitted changes)
 - WorkflowService.new() takes `Box<dyn VcsBackend>` (not Option)
@@ -83,6 +84,9 @@ On task completion with learnings:
 5. Learnings bubble to immediate parent only (preserves source_task_id)
 6. VCS required for start/complete - CRUD ops work without VCS
 7. VCS cleanup on delete is best-effort (logs warning, doesn't fail)
-8. VCS bookmark/branch lifecycle: created on start, deleted on complete (unified for jj & git), DB field cleared on success
+8. VCS bookmark/branch lifecycle:
+   - `start`: create bookmark/branch, checkout, and (git) capture `base_ref`
+   - `complete`: commit first; git requires ff integration to `base_ref` before DB completion
+   - post-complete branch cleanup is best-effort; DB bookmark cleared on successful deletion
 9. Milestone completion cleans ALL descendant bookmarks/branches (depth-1 and depth-2) PLUS milestone's own bookmark
 10. Blocker edges preserved on completion (not removed) - readiness computed from blocker's completed state

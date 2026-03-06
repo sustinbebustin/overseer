@@ -124,8 +124,8 @@ VCS operations are integrated into task workflow - no direct API:
 
 | Operation | VCS Effect |
 |-----------|-----------|
-| `tasks.start(id)` | **VCS required** - creates bookmark `task/<id>`, records start commit |
-| `tasks.complete(id)` | **VCS required** - commits changes, deletes bookmark (best-effort) |
+| `tasks.start(id)` | **VCS required** - creates bookmark `task/<id>`, records `startCommit`, and stores `baseRef` (git) |
+| `tasks.complete(id)` | **VCS required** - commits changes and (git) requires fast-forward merge from task branch into `baseRef` before DB completion |
 | `tasks.complete(milestone)` | Also cleans ALL descendant bookmarks (depth-1 and depth-2) |
 | `tasks.delete(id)` | Best-effort bookmark cleanup (works without VCS) |
 

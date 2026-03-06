@@ -25,11 +25,13 @@ Common ops: `status()`, `log()`, `commit()`, `create_bookmark()`, `delete_bookma
 - `status()`: gix status API with staged/worktree detection
 - `commit()`: Falls back to git CLI (gix staging API unstable)
 
-## UNIFIED STACKING SEMANTICS
+## WORKFLOW SEMANTICS
 
-Both backends implement identical workflow:
-- **start**: Create bookmark/branch at HEAD, checkout
-- **complete**: Commit -> checkout start_commit -> delete bookmark/branch
+Backends support workflow service semantics:
+- **start**: Create bookmark/branch at HEAD, checkout, and in git provide current branch for `base_ref`
+- **complete (git)**: Support ff-only merge gate from task branch into `base_ref` before DB completion
+- **complete (jj)**: Existing completion behavior remains unchanged
+- **cleanup**: Safe delete semantics (`git branch -d`; no force delete)
 
 ## ANTI-PATTERNS
 

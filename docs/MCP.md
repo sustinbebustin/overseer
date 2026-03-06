@@ -256,13 +256,14 @@ console.log("Parent learnings:", subtask.learnings.parent);
 VCS operations are integrated into task lifecycle - no manual VCS API calls needed:
 
 ```javascript
-// Complete task - VCS required, commits changes
+// Complete task - VCS required
 await tasks.complete(task.id, { result: "Login endpoint complete" });
 // -> Commits changes (NothingToCommit treated as success)
+// -> In git: requires fast-forward merge task branch -> baseRef before DB completion
 // -> Stores commit SHA on task
 ```
 
-**VCS is required** for `start` and `complete`. Fails with `NotARepository` if no jj/git found, `DirtyWorkingCopy` if uncommitted changes. In monorepos where workspace root is not a repo, pass `repoPath` on workflow calls (absolute or relative to host cwd). CRUD operations (create, list, get, etc.) work without VCS.
+**VCS is required** for `start` and `complete`. `start` captures `baseRef` in git. `complete` in git fails with `TaskIntegrationRequired` when ff merge is not possible, and `MissingBaseRef` for legacy started tasks missing base ref metadata. Also fails with `NotARepository` if no jj/git found, `DirtyWorkingCopy` if uncommitted changes. In monorepos where workspace root is not a repo, pass `repoPath` on workflow calls (absolute or relative to host cwd). CRUD operations (create, list, get, etc.) work without VCS.
 
 When provided, `repoPath` must exist and be a directory.
 

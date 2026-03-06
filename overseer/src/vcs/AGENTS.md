@@ -31,12 +31,13 @@ Native VCS backends: jj-lib (primary), gix (fallback). No subprocess spawning fo
 - `status()`: gix status API with staged/worktree change detection
 - Uses git CLI for `commit()` - gix staging API unstable
 
-## UNIFIED STACKING SEMANTICS
+## WORKFLOW SEMANTICS
 
-Both jj and git backends implement identical workflow behavior:
-- **start**: Create bookmark/branch at HEAD, checkout
-- **complete**: Commit → checkout start_commit → delete bookmark/branch
-- This solves git's "cannot delete checked-out branch" error
+Backend capabilities used by workflow service:
+- **start**: Create bookmark/branch at HEAD, checkout, and (git) detect current branch for `base_ref`
+- **complete (git)**: Commit changes, then enforce `merge --ff-only` of task branch into `base_ref` before DB completion
+- **complete (jj)**: Existing completion behavior unchanged
+- **cleanup**: Best-effort branch/bookmark deletion with safe delete only (`git branch -d`, no force delete)
 
 ## CONVENTIONS
 

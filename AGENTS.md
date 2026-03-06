@@ -137,10 +137,11 @@ Types must stay in sync between `overseer/src/types.rs`, `overseer/src/core/cont
 6. Learnings bubble to immediate parent on completion (preserves source_task_id)
 7. VCS required for workflow ops (start/complete) - fails with NotARepository or DirtyWorkingCopy
 8. VCS cleanup on delete is best-effort (logs warning, doesn't fail)
-9. VCS bookmark/branch lifecycle (unified stacking semantics):
-   - `start`: Create bookmark/branch at HEAD, checkout
-   - `complete`: Commit changes → checkout start_commit → delete bookmark/branch
-   - Both jj and git get identical behavior
+9. VCS bookmark/branch lifecycle:
+   - `start`: Create bookmark/branch at HEAD, checkout, and (git) record `base_ref`
+   - `complete`: Commit changes; (git) require fast-forward merge `task/<id>` -> `base_ref` before DB completion
+   - On git integration failure, task remains incomplete and branch is preserved
+   - On success, cleanup bookmark/branch best-effort and clear DB bookmark on successful deletion
 10. Milestone completion cleans ALL descendant bookmarks/branches (depth-1 and depth-2) PLUS milestone's own bookmark
 11. Blocker edges preserved on completion (not removed) - readiness computed from blocker's completed state
 
