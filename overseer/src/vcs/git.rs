@@ -27,6 +27,24 @@ impl GixBackend {
     fn open_repo(&self) -> VcsResult<gix::Repository> {
         gix::discover(&self.root).map_err(|e| VcsError::OperationFailed(format!("open repo: {e}")))
     }
+
+    fn has_porcelain_changes(&self) -> VcsResult<bool> {
+        let status_output = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&self.root)
+            .output()
+            .map_err(|e| VcsError::OperationFailed(format!("failed to run git status: {e}")))?;
+
+        if !status_output.status.success() {
+            let stderr = String::from_utf8_lossy(&status_output.stderr);
+            return Err(VcsError::OperationFailed(format!(
+                "git status failed: {stderr}"
+            )));
+        }
+
+        let status_str = String::from_utf8_lossy(&status_output.stdout);
+        Ok(!status_str.trim().is_empty())
+    }
 }
 
 impl VcsBackend for GixBackend {
@@ -110,6 +128,10 @@ impl VcsBackend for GixBackend {
             files,
             working_copy_id,
         })
+    }
+
+    fn is_clean(&self) -> VcsResult<bool> {
+        self.has_porcelain_changes().map(|has_changes| !has_changes)
     }
 
     fn log(&self, limit: usize) -> VcsResult<Vec<LogEntry>> {
@@ -233,22 +255,9 @@ impl VcsBackend for GixBackend {
         // Use git CLI for commit since gix's staging/commit API is still unstable.
         // This is the git fallback backend, so having git CLI available is reasonable.
 
-        // Check if there's anything to commit first (using porcelain for locale-independence)
-        let status_output = Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(&self.root)
-            .output()
-            .map_err(|e| VcsError::OperationFailed(format!("failed to run git status: {e}")))?;
-
-        if !status_output.status.success() {
-            let stderr = String::from_utf8_lossy(&status_output.stderr);
-            return Err(VcsError::OperationFailed(format!(
-                "git status failed: {stderr}"
-            )));
-        }
-
-        let status_str = String::from_utf8_lossy(&status_output.stdout);
-        if status_str.trim().is_empty() {
+        // Check if there's anything to commit first.
+        // Porcelain honors git ignore stack, including core.excludesfile.
+        if !self.has_porcelain_changes()? {
             return Err(VcsError::NothingToCommit);
         }
 
@@ -517,6 +526,7 @@ mod tests {
     use super::*;
     use crate::testutil::{GitTestRepo, TestRepo};
     use crate::vcs::backend::{is_fast_forward_rejected_message, VcsType};
+    use tempfile::TempDir;
 
     fn current_branch(repo: &GitTestRepo) -> String {
         let output = std::process::Command::new("git")
@@ -789,6 +799,49 @@ mod tests {
         assert!(
             !backend.is_clean().unwrap(),
             "is_clean should return false with staged changes"
+        );
+    }
+
+    #[test]
+    fn test_is_clean_respects_core_excludesfile_patterns() {
+        let repo = GitTestRepo::new().unwrap();
+        repo.write_file("tracked.txt", "tracked").unwrap();
+        repo.commit("initial commit").unwrap();
+
+        let excludes_dir = TempDir::new().unwrap();
+        let excludes_file = excludes_dir.path().join("global-ignore");
+        std::fs::write(&excludes_file, ".claude/skills/\n").unwrap();
+        let excludes_file_str = excludes_file.to_string_lossy().to_string();
+
+        let config_output = std::process::Command::new("git")
+            .args(["config", "core.excludesfile", excludes_file_str.as_str()])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(
+            config_output.status.success(),
+            "git config failed: {}",
+            String::from_utf8_lossy(&config_output.stderr)
+        );
+
+        repo.write_file(".claude/skills/overseer/SKILL.md", "ignored")
+            .unwrap();
+
+        let porcelain = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(porcelain.status.success());
+        assert!(
+            String::from_utf8_lossy(&porcelain.stdout).trim().is_empty(),
+            "git porcelain should be clean for excluded paths"
+        );
+
+        let backend = GixBackend::open(repo.path()).unwrap();
+        assert!(
+            backend.is_clean().unwrap(),
+            "is_clean should honor core.excludesfile patterns"
         );
     }
 
