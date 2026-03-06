@@ -61,7 +61,7 @@ console.log("Task learnings:", task.learnings.own);
 await tasks.start(taskId);
 ```
 
-**VCS Required:** Creates bookmark `task/<id>`, records start commit. Fails with `NotARepository` if no jj/git found.
+**VCS Required:** Creates bookmark `task/<id>`, records start commit, and stores `baseRef` in git mode. Fails with `NotARepository` if no jj/git found.
 
 After starting, the task status changes to `in_progress`.
 
@@ -101,7 +101,7 @@ Verification:
 });
 ```
 
-**VCS Required:** Commits changes (NothingToCommit treated as success), then deletes the task's bookmark (best-effort) and clears the DB bookmark field on success. Fails with `NotARepository` if no jj/git found.
+**VCS Required:** Commits changes (NothingToCommit treated as success). In git mode, completion requires fast-forward merge from task branch into `baseRef`; if merge fails, completion fails and branch is preserved. After successful completion, deletes the task's bookmark (best-effort) and clears the DB bookmark field on success. Fails with `NotARepository` if no jj/git found.
 
 **Learnings Effect:** Learnings bubble to immediate parent only. `sourceTaskId` is preserved through bubbling, so if this task's learnings later bubble further, the origin is tracked.
 
@@ -113,8 +113,8 @@ VCS operations are **automatically handled** by the tasks API:
 
 | Task Operation | VCS Effect |
 |----------------|------------|
-| `tasks.start(id)` | **VCS required** - creates bookmark `task/<id>`, records start commit |
-| `tasks.complete(id)` | **VCS required** - commits changes, deletes bookmark (best-effort), clears DB bookmark on success |
+| `tasks.start(id)` | **VCS required** - creates bookmark `task/<id>`, records start commit, captures `baseRef` in git |
+| `tasks.complete(id)` | **VCS required** - commits changes, enforces git fast-forward integration to `baseRef`, then deletes bookmark (best-effort), clears DB bookmark on success |
 | `tasks.complete(milestoneId)` | Same + deletes ALL descendant bookmarks recursively (depth-1 and depth-2) |
 | `tasks.delete(id)` | Best-effort bookmark cleanup (logs warning on failure) |
 
