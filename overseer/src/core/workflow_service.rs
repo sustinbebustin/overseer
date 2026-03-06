@@ -62,19 +62,14 @@ impl<'a> TaskWorkflowService<'a> {
 
         // Idempotent: already started with VCS state
         if task.started_at.is_some() && task.bookmark.is_some() {
-            let idempotent_base_ref =
-                if task.base_ref.is_none() && self.vcs.vcs_type() == VcsType::Git {
-                    Some(self.current_git_branch_name()?)
-                } else {
-                    None
-                };
-
-            if task.base_ref.is_none() {
-                if let Some(ref inferred_base_ref) = idempotent_base_ref {
-                    if inferred_base_ref != &bookmark {
-                        task_repo::set_base_ref(self.conn, id, inferred_base_ref)?;
-                    }
+            if task.base_ref.is_none() && self.vcs.vcs_type() == VcsType::Git {
+                let inferred_base_ref = self.current_git_branch_name()?;
+                if inferred_base_ref == bookmark {
+                    return Err(OsError::MissingBaseRef {
+                        task_id: id.clone(),
+                    });
                 }
+                task_repo::set_base_ref(self.conn, id, &inferred_base_ref)?;
             }
 
             // Just checkout the existing bookmark
@@ -752,6 +747,41 @@ mod tests {
 
         let started = service.start(&task.id).unwrap();
         assert_eq!(started.base_ref.as_deref(), Some("feature/base"));
+    }
+
+    #[test]
+    fn test_start_fails_for_legacy_started_task_on_task_branch() {
+        let conn = setup_db();
+        let task_service = TaskService::new(&conn);
+
+        let task = task_service
+            .create(&CreateTaskInput {
+                description: "Test task".to_string(),
+                context: None,
+                parent_id: None,
+                priority: None,
+                blocked_by: vec![],
+            })
+            .unwrap();
+
+        task_service.start(&task.id).unwrap();
+        let bookmark = format!("task/{}", task.id);
+        task_repo::set_bookmark(&conn, &task.id, &bookmark).unwrap();
+        task_repo::set_start_commit(&conn, &task.id, "mock-commit-id").unwrap();
+
+        let service = TaskWorkflowService::new(
+            &conn,
+            Box::new(MockVcsBackend {
+                branch_mode: BranchMode::Named(bookmark.clone()),
+                merge_result: true,
+            }),
+        );
+
+        let result = service.start(&task.id);
+        assert!(matches!(
+            result,
+            Err(OsError::MissingBaseRef { task_id }) if task_id == task.id
+        ));
     }
 
     #[test]

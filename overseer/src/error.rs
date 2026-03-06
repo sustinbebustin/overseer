@@ -110,7 +110,7 @@ pub enum OsError {
         base_ref: String,
     },
 
-    #[error("Missing baseRef for started task: {task_id}")]
+    #[error("Missing baseRef for started task: {task_id} (checkout intended base branch, run tasks.start(task_id), then retry complete)")]
     MissingBaseRef { task_id: TaskId },
 
     #[error("Cannot complete cancelled task")]
