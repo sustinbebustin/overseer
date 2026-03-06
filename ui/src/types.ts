@@ -86,6 +86,8 @@ export interface Task {
   bookmark?: string;
   startCommit?: string;
   baseRef?: string;
+  /** Relative path from workspace root to repo */
+  repoPath?: string;
   /** Computed: true if task or any ancestor has incomplete blockers */
   effectivelyBlocked: boolean;
   /** Task was cancelled (abandoned without completion) */

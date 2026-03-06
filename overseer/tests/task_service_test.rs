@@ -38,6 +38,7 @@ fn test_create_milestone() {
             parent_id: None,
             priority: Some(1),
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -61,6 +62,7 @@ fn test_create_task_with_parent() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -71,6 +73,7 @@ fn test_create_task_with_parent() {
             parent_id: Some(milestone.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -91,6 +94,7 @@ fn test_create_with_nonexistent_parent() {
         parent_id: Some(nonexistent_id),
         priority: None,
         blocked_by: vec![],
+        ..Default::default()
     });
 
     assert!(matches!(result, Err(OsError::ParentNotFound(_))));
@@ -109,6 +113,7 @@ fn test_create_with_nonexistent_blocker() {
         parent_id: None,
         priority: None,
         blocked_by: vec![nonexistent_id],
+        ..Default::default()
     });
 
     assert!(matches!(result, Err(OsError::BlockerNotFound(_))));
@@ -126,6 +131,7 @@ fn test_get_task_with_full_context() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -158,6 +164,7 @@ fn test_list_all_tasks() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -168,6 +175,7 @@ fn test_list_all_tasks() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -177,7 +185,7 @@ fn test_list_all_tasks() {
             ready: false,
             completed: None,
             depth: None,
-            ..Default::default()
+                ..Default::default()
         })
         .unwrap();
 
@@ -196,6 +204,7 @@ fn test_update_description() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -204,9 +213,7 @@ fn test_update_description() {
             &task.id,
             &UpdateTaskInput {
                 description: Some("Updated".to_string()),
-                context: None,
-                parent_id: None,
-                priority: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -224,9 +231,7 @@ fn test_update_nonexistent_task() {
         &nonexistent_id,
         &UpdateTaskInput {
             description: Some("Updated".to_string()),
-            context: None,
-            parent_id: None,
-            priority: None,
+            ..Default::default()
         },
     );
 
@@ -245,6 +250,7 @@ fn test_delete_task() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -279,6 +285,7 @@ fn test_max_depth_enforcement() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -290,6 +297,7 @@ fn test_max_depth_enforcement() {
             parent_id: Some(milestone.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -301,6 +309,7 @@ fn test_max_depth_enforcement() {
             parent_id: Some(task.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -313,6 +322,7 @@ fn test_max_depth_enforcement() {
         parent_id: Some(subtask.id),
         priority: None,
         blocked_by: vec![],
+        ..Default::default()
     });
 
     assert!(matches!(result, Err(OsError::MaxDepthExceeded)));
@@ -331,6 +341,7 @@ fn test_update_parent_violates_max_depth() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -341,6 +352,7 @@ fn test_update_parent_violates_max_depth() {
             parent_id: Some(milestone.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -351,6 +363,7 @@ fn test_update_parent_violates_max_depth() {
             parent_id: Some(task.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -362,6 +375,7 @@ fn test_update_parent_violates_max_depth() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -369,10 +383,8 @@ fn test_update_parent_violates_max_depth() {
     let result = service.update(
         &orphan.id,
         &UpdateTaskInput {
-            description: None,
-            context: None,
             parent_id: Some(subtask.id),
-            priority: None,
+            ..Default::default()
         },
     );
 
@@ -393,6 +405,7 @@ fn test_parent_cycle_direct() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -400,10 +413,8 @@ fn test_parent_cycle_direct() {
     let result = service.update(
         &task.id,
         &UpdateTaskInput {
-            description: None,
-            context: None,
             parent_id: Some(task.id.clone()),
-            priority: None,
+            ..Default::default()
         },
     );
 
@@ -423,6 +434,7 @@ fn test_parent_cycle_indirect() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -433,6 +445,7 @@ fn test_parent_cycle_indirect() {
             parent_id: Some(task_a.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -443,6 +456,7 @@ fn test_parent_cycle_indirect() {
             parent_id: Some(task_b.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -450,10 +464,8 @@ fn test_parent_cycle_indirect() {
     let result = service.update(
         &task_a.id,
         &UpdateTaskInput {
-            description: None,
-            context: None,
             parent_id: Some(task_c.id),
-            priority: None,
+            ..Default::default()
         },
     );
 
@@ -472,6 +484,7 @@ fn test_blocker_cycle_direct() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -496,6 +509,7 @@ fn test_blocker_cycle_indirect() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -506,6 +520,7 @@ fn test_blocker_cycle_indirect() {
             parent_id: None,
             priority: None,
             blocked_by: vec![task_a.id.clone()],
+            ..Default::default()
         })
         .unwrap();
 
@@ -516,6 +531,7 @@ fn test_blocker_cycle_indirect() {
             parent_id: None,
             priority: None,
             blocked_by: vec![task_b.id.clone()],
+            ..Default::default()
         })
         .unwrap();
 
@@ -537,6 +553,7 @@ fn test_blocker_cycle_complex() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -547,6 +564,7 @@ fn test_blocker_cycle_complex() {
             parent_id: None,
             priority: None,
             blocked_by: vec![task_a.id.clone()],
+            ..Default::default()
         })
         .unwrap();
 
@@ -557,6 +575,7 @@ fn test_blocker_cycle_complex() {
             parent_id: None,
             priority: None,
             blocked_by: vec![task_a.id.clone()],
+            ..Default::default()
         })
         .unwrap();
 
@@ -567,6 +586,7 @@ fn test_blocker_cycle_complex() {
             parent_id: None,
             priority: None,
             blocked_by: vec![task_b.id.clone(), task_c.id.clone()],
+            ..Default::default()
         })
         .unwrap();
 
@@ -589,6 +609,7 @@ fn test_add_blocker() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -599,6 +620,7 @@ fn test_add_blocker() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -618,6 +640,7 @@ fn test_remove_blocker() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -628,6 +651,7 @@ fn test_remove_blocker() {
             parent_id: None,
             priority: None,
             blocked_by: vec![blocker.id.clone()],
+            ..Default::default()
         })
         .unwrap();
 
@@ -651,6 +675,7 @@ fn test_start_task() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -672,6 +697,7 @@ fn test_complete_task() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -696,6 +722,7 @@ fn test_complete_task_with_pending_children() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -706,6 +733,7 @@ fn test_complete_task_with_pending_children() {
             parent_id: Some(parent.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -725,6 +753,7 @@ fn test_reopen_task() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -750,6 +779,7 @@ fn test_cascade_delete_children() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -760,6 +790,7 @@ fn test_cascade_delete_children() {
             parent_id: Some(parent.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -782,6 +813,7 @@ fn test_cascade_delete_blockers() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -792,6 +824,7 @@ fn test_cascade_delete_blockers() {
             parent_id: None,
             priority: None,
             blocked_by: vec![blocker.id.clone()],
+            ..Default::default()
         })
         .unwrap();
 
@@ -815,6 +848,7 @@ fn test_cascade_delete_deep_hierarchy() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -825,6 +859,7 @@ fn test_cascade_delete_deep_hierarchy() {
             parent_id: Some(milestone.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -835,6 +870,7 @@ fn test_cascade_delete_deep_hierarchy() {
             parent_id: Some(task.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 

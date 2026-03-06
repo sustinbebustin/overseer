@@ -44,6 +44,7 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         bookmark: row.get("bookmark")?,
         start_commit: row.get("start_commit")?,
         base_ref: row.get("base_ref")?,
+        repo_path: row.get("repo_path")?,
         depth: None,
         blocked_by: Vec::new(),
         blocks: Vec::new(),
@@ -67,8 +68,8 @@ pub fn create_task(conn: &Connection, input: &CreateTaskInput) -> Result<Task> {
 
     conn.execute(
         r#"
-        INSERT INTO tasks (id, parent_id, description, context, priority, created_at, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        INSERT INTO tasks (id, parent_id, description, context, priority, repo_path, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         "#,
         params![
             &id,
@@ -76,6 +77,7 @@ pub fn create_task(conn: &Connection, input: &CreateTaskInput) -> Result<Task> {
             input.description,
             input.context.as_deref().unwrap_or(""),
             input.priority.unwrap_or(1),
+            input.repo_path.as_deref(),
             now_str,
             now_str,
         ],
@@ -135,20 +137,20 @@ pub fn list_tasks(conn: &Connection, filter: &ListTasksFilter) -> Result<Vec<Tas
             WITH RECURSIVE task_depths AS (
                 SELECT id, parent_id, description, context, result, priority, completed,
                        completed_at, created_at, updated_at, started_at, commit_sha, bookmark, start_commit, base_ref,
-                       cancelled, cancelled_at, archived, archived_at,
+                       repo_path, cancelled, cancelled_at, archived, archived_at,
                        0 as depth
                 FROM tasks WHERE parent_id IS NULL
                 UNION ALL
                 SELECT t.id, t.parent_id, t.description, t.context, t.result, t.priority, t.completed,
                        t.completed_at, t.created_at, t.updated_at, t.started_at, t.commit_sha, t.bookmark, t.start_commit, t.base_ref,
-                       t.cancelled, t.cancelled_at, t.archived, t.archived_at,
+                       t.repo_path, t.cancelled, t.cancelled_at, t.archived, t.archived_at,
                        td.depth + 1
                 FROM tasks t
                 INNER JOIN task_depths td ON t.parent_id = td.id
             )
             SELECT id, parent_id, description, context, result, priority, completed,
                    completed_at, created_at, updated_at, started_at, commit_sha, bookmark, start_commit, base_ref,
-                   cancelled, cancelled_at, archived, archived_at
+                   repo_path, cancelled, cancelled_at, archived, archived_at
             FROM task_depths WHERE 1=1
             "#,
         );
@@ -175,6 +177,11 @@ pub fn list_tasks(conn: &Connection, filter: &ListTasksFilter) -> Result<Vec<Tas
         }
         // None = include all (no filter clause)
 
+        if let Some(ref repo_path) = filter.repo_path {
+            sql.push_str(" AND repo_path = ?");
+            params_vec.push(Box::new(repo_path.clone()));
+        }
+
         sql.push_str(" ORDER BY priority ASC, created_at ASC");
         sql
     } else {
@@ -197,6 +204,11 @@ pub fn list_tasks(conn: &Connection, filter: &ListTasksFilter) -> Result<Vec<Tas
             params_vec.push(Box::new(if archived { 1 } else { 0 }));
         }
         // None = include all (no filter clause)
+
+        if let Some(ref repo_path) = filter.repo_path {
+            sql.push_str(" AND repo_path = ?");
+            params_vec.push(Box::new(repo_path.clone()));
+        }
 
         sql.push_str(" ORDER BY priority ASC, created_at ASC");
         sql
@@ -265,6 +277,12 @@ pub fn update_task(conn: &Connection, id: &TaskId, input: &UpdateTaskInput) -> R
     if let Some(ref parent_id) = input.parent_id {
         updates.push(format!("parent_id = ?{}", param_idx));
         params_vec.push(Box::new(parent_id.clone()));
+        param_idx += 1;
+    }
+
+    if let Some(ref repo_path) = input.repo_path {
+        updates.push(format!("repo_path = ?{}", param_idx));
+        params_vec.push(Box::new(repo_path.clone()));
         param_idx += 1;
     }
 
@@ -433,37 +451,6 @@ pub fn clear_bookmark(conn: &Connection, id: &TaskId) -> Result<()> {
     Ok(())
 }
 
-/// Get bookmark for a task (lightweight query for delete cleanup)
-pub fn get_bookmark(conn: &Connection, id: &TaskId) -> Result<Option<String>> {
-    conn.query_row(
-        "SELECT bookmark FROM tasks WHERE id = ?1",
-        params![id],
-        |row| row.get(0),
-    )
-    .optional()
-    .map(|opt| opt.flatten())
-    .map_err(OsError::from)
-}
-
-/// Get bookmarks for task and all descendants (for delete cleanup)
-pub fn get_all_bookmarks(conn: &Connection, id: &TaskId) -> Result<Vec<String>> {
-    let mut bookmarks = Vec::new();
-
-    // Get the task's own bookmark
-    if let Some(bookmark) = get_bookmark(conn, id)? {
-        bookmarks.push(bookmark);
-    }
-
-    // Get all descendant bookmarks
-    let descendants = get_all_descendants(conn, id)?;
-    for desc in descendants {
-        if let Some(bookmark) = desc.bookmark {
-            bookmarks.push(bookmark);
-        }
-    }
-
-    Ok(bookmarks)
-}
 
 pub fn get_children(conn: &Connection, parent_id: &TaskId) -> Result<Vec<Task>> {
     let mut stmt = conn.prepare("SELECT * FROM tasks WHERE parent_id = ?1")?;

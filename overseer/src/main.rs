@@ -296,35 +296,48 @@ fn find_static_root(exe_path: &PathBuf) -> Option<String> {
     None
 }
 
-/// Determine the default database path, anchored to the VCS root if found.
+/// Determine the default database path.
 ///
 /// Resolution order:
 /// 1. OVERSEER_DB_PATH env var (if set)
-/// 2. VCS root (.jj or .git) -> .overseer/tasks.db
-/// 3. Fall back to current working directory -> .overseer/tasks.db
+/// 2. Walk up from CWD looking for existing .overseer/tasks.db (find nearest workspace)
+/// 3. VCS root (.jj or .git) -> .overseer/tasks.db (first-time init)
+/// 4. Fall back to current working directory -> .overseer/tasks.db
 fn default_db_path() -> PathBuf {
-    // Check env override first
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    default_db_path_from(&cwd)
+}
+
+fn default_db_path_from(base_dir: &std::path::Path) -> PathBuf {
     if let Ok(path) = std::env::var("OVERSEER_DB_PATH") {
         return PathBuf::from(path);
     }
 
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    // Walk up looking for existing .overseer/tasks.db (find nearest workspace)
+    let mut current = base_dir.to_path_buf();
+    loop {
+        let candidate = current.join(".overseer").join("tasks.db");
+        if candidate.exists() {
+            return candidate;
+        }
+        if !current.pop() {
+            break;
+        }
+    }
 
-    // Use VCS root if available (same detection as VCS module)
-    let (_, vcs_root) = vcs::detect_vcs_type(&cwd);
-    let base = vcs_root.unwrap_or(cwd);
-
+    // Fall back to VCS root detection (first-time init)
+    let (_, vcs_root) = vcs::detect_vcs_type(base_dir);
+    let base = vcs_root.unwrap_or_else(|| base_dir.to_path_buf());
     base.join(".overseer").join("tasks.db")
 }
 
-fn default_db_path_from(base_dir: &PathBuf) -> PathBuf {
-    if let Ok(path) = std::env::var("OVERSEER_DB_PATH") {
-        return PathBuf::from(path);
-    }
-
-    let (_, vcs_root) = vcs::detect_vcs_type(base_dir);
-    let base = vcs_root.unwrap_or_else(|| base_dir.clone());
-    base.join(".overseer").join("tasks.db")
+/// Derive workspace root from DB path: db is at WORKSPACE/.overseer/tasks.db
+fn workspace_root_from_db(db_path: &std::path::Path) -> PathBuf {
+    db_path
+        .parent() // .overseer/
+        .and_then(|p| p.parent()) // workspace/
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf()
 }
 
 fn main() {
@@ -412,13 +425,12 @@ fn run(command: &Command, db_path: &PathBuf) -> error::Result<String> {
             // Delete is best-effort VCS cleanup (works without VCS)
             let result = match &cloned_cmd {
                 TaskCommand::Start { .. } | TaskCommand::Complete(_) => {
-                    let vcs = vcs::get_backend(&std::env::current_dir().unwrap_or_default())?;
-                    task::handle_workflow(&conn, cloned_cmd, vcs)?
+                    let workspace_root = workspace_root_from_db(db_path);
+                    task::handle_workflow(&conn, cloned_cmd, workspace_root)?
                 }
                 TaskCommand::Delete { .. } => {
-                    // VCS optional for delete - best effort cleanup
-                    let vcs = vcs::get_backend(&std::env::current_dir().unwrap_or_default()).ok();
-                    task::handle_delete(&conn, cloned_cmd, vcs)?
+                    let workspace_root = workspace_root_from_db(db_path);
+                    task::handle_delete(&conn, cloned_cmd, Some(workspace_root))?
                 }
                 _ => task::handle(&conn, cloned_cmd)?,
             };
@@ -492,6 +504,7 @@ fn clone_task_cmd(cmd: &TaskCommand) -> TaskCommand {
             parent: args.parent.clone(),
             priority: args.priority,
             blocked_by: args.blocked_by.clone(),
+            repo: args.repo.clone(),
         }),
         TaskCommand::Get { id } => TaskCommand::Get { id: id.clone() },
         TaskCommand::List(args) => TaskCommand::List(task::ListArgs {
@@ -504,6 +517,7 @@ fn clone_task_cmd(cmd: &TaskCommand) -> TaskCommand {
             archived: args.archived,
             all: args.all,
             flat: args.flat,
+            repo: args.repo.clone(),
         }),
         TaskCommand::Update(args) => TaskCommand::Update(task::UpdateArgs {
             id: args.id.clone(),
@@ -511,6 +525,7 @@ fn clone_task_cmd(cmd: &TaskCommand) -> TaskCommand {
             context: args.context.clone(),
             priority: args.priority,
             parent: args.parent.clone(),
+            repo: args.repo.clone(),
         }),
         TaskCommand::Start { id } => TaskCommand::Start { id: id.clone() },
         TaskCommand::Complete(args) => TaskCommand::Complete(task::CompleteArgs {

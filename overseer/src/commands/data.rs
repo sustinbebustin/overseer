@@ -79,7 +79,7 @@ pub(crate) fn export_data(conn: &Connection, output: Option<PathBuf>) -> Result<
     // Get all tasks including archived (archived: None = include all)
     let filter = ListTasksFilter {
         archived: None,
-        ..Default::default()
+            ..Default::default()
     };
     let tasks = task_repo::list_tasks(conn, &filter)?;
     let export_tasks: Vec<ExportTask> = tasks
@@ -204,6 +204,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -214,6 +215,7 @@ mod tests {
                 parent_id: Some(task1.id.clone()),
                 priority: Some(1),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -245,6 +247,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -255,6 +258,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![task1.id.clone()],
+                ..Default::default()
             })
             .unwrap();
 

@@ -125,6 +125,9 @@ pub enum OsError {
     #[error("Invalid priority: {0} (must be 0-2)")]
     InvalidPriority(i32),
 
+    #[error("Invalid repo path '{path}': {reason}")]
+    InvalidRepoPath { path: String, reason: String },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

@@ -67,6 +67,8 @@ pub struct Task {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub depth: Option<i32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocked_by: Vec<TaskId>,
@@ -151,6 +153,7 @@ pub struct CreateTaskInput {
     pub parent_id: Option<TaskId>,
     pub priority: Option<i32>,
     pub blocked_by: Vec<TaskId>,
+    pub repo_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -159,6 +162,7 @@ pub struct UpdateTaskInput {
     pub context: Option<String>,
     pub priority: Option<i32>,
     pub parent_id: Option<TaskId>,
+    pub repo_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -173,6 +177,8 @@ pub struct ListTasksFilter {
     /// - Some(true): only archived
     /// - Some(false): hide archived (default)
     pub archived: Option<bool>,
+    /// Filter by repo path (exact match)
+    pub repo_path: Option<String>,
 }
 
 impl Default for ListTasksFilter {
@@ -183,6 +189,7 @@ impl Default for ListTasksFilter {
             completed: None,
             depth: None,
             archived: Some(false), // Default: hide archived
+            repo_path: None,
         }
     }
 }

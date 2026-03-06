@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use crate::error::Result;
 
-const SCHEMA_VERSION: i32 = 6;
+const SCHEMA_VERSION: i32 = 7;
 
 pub fn init_schema(conn: &Connection) -> Result<()> {
     let current_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -26,6 +26,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
                 bookmark TEXT,
                 start_commit TEXT,
                 base_ref TEXT,
+                repo_path TEXT,
                 cancelled INTEGER NOT NULL DEFAULT 0,
                 cancelled_at TEXT,
                 archived INTEGER NOT NULL DEFAULT 0,
@@ -52,6 +53,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             );
 
             CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
+            CREATE INDEX IF NOT EXISTS idx_tasks_repo_path ON tasks(repo_path);
             CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed);
             CREATE INDEX IF NOT EXISTS idx_tasks_cancelled ON tasks(cancelled);
             CREATE INDEX IF NOT EXISTS idx_tasks_archived ON tasks(archived);
@@ -156,6 +158,20 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )?;
         conn.pragma_update(None, "user_version", 6)?;
         version = 6;
+    }
+
+    // Migration for version 6 -> 7: add repo_path for multi-repo support
+    if version == 6 {
+        conn.execute_batch(
+            r#"
+            BEGIN;
+            ALTER TABLE tasks ADD COLUMN repo_path TEXT;
+            CREATE INDEX IF NOT EXISTS idx_tasks_repo_path ON tasks(repo_path);
+            COMMIT;
+            "#,
+        )?;
+        conn.pragma_update(None, "user_version", 7)?;
+        version = 7;
     }
 
     // Suppress unused variable warning - version is used for sequential migration chaining

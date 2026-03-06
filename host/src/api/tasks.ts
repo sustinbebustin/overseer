@@ -48,6 +48,8 @@ export interface TaskFilter {
    * - "all": include all (archived and non-archived)
    */
   archived?: boolean | "all";
+  /** Filter by repo path (exact match) */
+  repoPath?: string;
 }
 
 export interface CreateTaskInput {
@@ -56,6 +58,8 @@ export interface CreateTaskInput {
   parentId?: string;
   priority?: Priority;
   blockedBy?: string[];
+  /** Relative path from workspace root to repo (e.g. "frontend") */
+  repoPath?: string;
 }
 
 export interface UpdateTaskInput {
@@ -63,6 +67,8 @@ export interface UpdateTaskInput {
   context?: string;
   priority?: Priority;
   parentId?: string;
+  /** Relative path from workspace root to repo */
+  repoPath?: string;
 }
 
 export interface WorkflowRepoOptions {
@@ -113,6 +119,7 @@ export const tasks = {
       args.push("--all");
     }
     // Default (undefined or false) = hide archived (CLI default)
+    if (filter?.repoPath) args.push("--repo", filter.repoPath);
     return decodeTasks(await callCli(args)).unwrap("tasks.list");
   },
 
@@ -135,6 +142,7 @@ export const tasks = {
     if (input.blockedBy && input.blockedBy.length > 0) {
       args.push("--blocked-by", input.blockedBy.join(","));
     }
+    if (input.repoPath) args.push("--repo", input.repoPath);
     return decodeTask(await callCli(args)).unwrap("tasks.create");
   },
 
@@ -148,6 +156,7 @@ export const tasks = {
     if (input.context) args.push("--context", input.context);
     if (input.priority !== undefined) args.push("--priority", String(input.priority));
     if (input.parentId) args.push("--parent", input.parentId);
+    if (input.repoPath) args.push("--repo", input.repoPath);
     return decodeTask(await callCli(args)).unwrap("tasks.update");
   },
 

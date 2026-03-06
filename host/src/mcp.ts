@@ -34,6 +34,7 @@ interface Task {
   bookmark?: string;            // VCS bookmark name (if started)
   startCommit?: string;         // Commit SHA at start
   baseRef?: string;             // Branch captured at start (git)
+  repoPath?: string;           // Relative path from workspace root to repo
   effectivelyBlocked: boolean;  // True if task OR ancestor has incomplete blockers
   cancelled: boolean;           // Task was cancelled (does NOT satisfy blockers)
   cancelledAt: string | null;
@@ -71,7 +72,7 @@ type TaskType = "milestone" | "task" | "subtask";
 // Tasks API
 // Note: VCS (jj or git) is REQUIRED for start/complete. CRUD ops work without VCS.
 declare const tasks: {
-  list(filter?: { parentId?: string; ready?: boolean; completed?: boolean; depth?: 0 | 1 | 2; type?: TaskType; archived?: boolean | "all" }): Promise<Task[]>;
+  list(filter?: { parentId?: string; ready?: boolean; completed?: boolean; depth?: 0 | 1 | 2; type?: TaskType; archived?: boolean | "all"; repoPath?: string }): Promise<Task[]>;
   get(id: string): Promise<TaskWithContext>;
   create(input: {
     description: string;
@@ -79,12 +80,14 @@ declare const tasks: {
     parentId?: string;
     priority?: 0 | 1 | 2;
     blockedBy?: string[];
+    repoPath?: string;
   }): Promise<Task>;
   update(id: string, input: {
     description?: string;
     context?: string;
     priority?: 0 | 1 | 2;
     parentId?: string;
+    repoPath?: string;
   }): Promise<Task>;
   start(id: string, options?: { repoPath?: string }): Promise<Task>;  // VCS required: creates bookmark, records start commit
   complete(id: string, options?: { result?: string; learnings?: string[]; repoPath?: string }): Promise<Task>;  // VCS required: commits changes (NothingToCommit = success)
@@ -106,7 +109,7 @@ declare const learnings: {
 };
 \`\`\`
 
-**VCS Requirement:** \`start\` and \`complete\` require jj or git. Fails with NotARepository error if none found. In monorepos where root is not a repo, pass \`repoPath\` (absolute or relative to host cwd) for workflow calls. \`repoPath\` must exist and be a directory. CRUD operations work without VCS.
+**VCS Requirement:** \`start\` and \`complete\` require jj or git. Fails with NotARepository error if none found. Tasks carry an optional \`repoPath\` (relative path from workspace root to repo). When set, VCS operations resolve the correct repo per-task. For workflow calls (\`start\`/\`complete\`), the task's stored \`repoPath\` auto-resolves VCS. CRUD operations work without VCS.
 
 Examples:
 

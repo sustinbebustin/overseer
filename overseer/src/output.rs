@@ -694,6 +694,9 @@ impl Printer {
                 println!("  Result: {}", result);
             }
             println!("  Priority: p{}", task.priority.style(priority_style));
+            if let Some(ref repo_path) = task.repo_path {
+                println!("  Repo: {}", repo_path);
+            }
             if let Some(depth) = task.depth {
                 println!("  Depth: {}", depth);
             }

@@ -33,6 +33,7 @@ fn test_add_learning() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -57,6 +58,7 @@ fn test_add_learning_with_source() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -67,6 +69,7 @@ fn test_add_learning_with_source() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -93,6 +96,7 @@ fn test_list_learnings() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -119,6 +123,7 @@ fn test_list_learnings_empty() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -138,6 +143,7 @@ fn test_delete_learning() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -163,6 +169,7 @@ fn test_cascade_delete_learnings_with_task() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -192,6 +199,7 @@ fn test_cascade_delete_learnings_with_parent_task() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -202,6 +210,7 @@ fn test_cascade_delete_learnings_with_parent_task() {
             parent_id: Some(parent.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -239,6 +248,7 @@ fn test_learnings_isolated_by_task() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -249,6 +259,7 @@ fn test_learnings_isolated_by_task() {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 

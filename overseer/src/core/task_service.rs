@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::Path;
 
 use rusqlite::Connection;
 
@@ -12,6 +13,25 @@ use crate::types::{
 use crate::vcs;
 
 const MAX_DEPTH: i32 = 2;
+
+fn validate_repo_path(repo_path: &str) -> Result<()> {
+    let path = Path::new(repo_path);
+    if path.is_absolute() {
+        return Err(OsError::InvalidRepoPath {
+            path: repo_path.to_string(),
+            reason: "must be a relative path".to_string(),
+        });
+    }
+    for component in path.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err(OsError::InvalidRepoPath {
+                path: repo_path.to_string(),
+                reason: "must not contain '..' components".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
 
 pub struct TaskService<'a> {
     conn: &'a Connection,
@@ -28,6 +48,10 @@ impl<'a> TaskService<'a> {
             if !(0..=2).contains(&priority) {
                 return Err(OsError::InvalidPriority(priority));
             }
+        }
+
+        if let Some(ref repo_path) = input.repo_path {
+            validate_repo_path(repo_path)?;
         }
 
         if let Some(ref parent_id) = input.parent_id {
@@ -105,6 +129,20 @@ impl<'a> TaskService<'a> {
         if let Some(priority) = input.priority {
             if !(0..=2).contains(&priority) {
                 return Err(OsError::InvalidPriority(priority));
+            }
+        }
+
+        // Validate repo_path if provided
+        if let Some(ref repo_path) = input.repo_path {
+            validate_repo_path(repo_path)?;
+            // Cannot change repo_path after task is started (would orphan VCS bookmark)
+            let task = task_repo::get_task(self.conn, id)?
+                .ok_or_else(|| OsError::TaskNotFound(id.clone()))?;
+            if task.started_at.is_some() {
+                return Err(OsError::InvalidRepoPath {
+                    path: repo_path.clone(),
+                    reason: "cannot change repo_path after task is started".to_string(),
+                });
             }
         }
 
@@ -870,6 +908,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -893,6 +932,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -903,6 +943,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -926,6 +967,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -936,6 +978,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -946,6 +989,7 @@ mod tests {
                 parent_id: Some(task.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -969,6 +1013,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -993,6 +1038,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1006,6 +1052,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1032,6 +1079,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1044,6 +1092,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1057,6 +1106,7 @@ mod tests {
                 parent_id: Some(task.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1085,6 +1135,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1110,6 +1161,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1141,6 +1193,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1151,6 +1204,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1161,6 +1215,7 @@ mod tests {
                 parent_id: Some(task.id.clone()),
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1181,6 +1236,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(1),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1192,6 +1248,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![blocker.id.clone()],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1202,6 +1259,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1236,6 +1294,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1256,6 +1315,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1267,6 +1327,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(1),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1278,6 +1339,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1304,6 +1366,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1314,6 +1377,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![blocker_task.id.clone()],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1324,6 +1388,7 @@ mod tests {
                 parent_id: Some(blocked_milestone.id.clone()),
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1345,6 +1410,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1355,6 +1421,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![task_a.id.clone()],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1375,6 +1442,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1385,6 +1453,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1408,6 +1477,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1418,6 +1488,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1441,6 +1512,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1451,6 +1523,7 @@ mod tests {
             parent_id: Some(milestone.id.clone()),
             priority: Some(0),
             blocked_by: vec![milestone.id.clone()],
+            ..Default::default()
         });
         assert!(matches!(
             result,
@@ -1471,6 +1544,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1481,6 +1555,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1492,6 +1567,7 @@ mod tests {
                 parent_id: Some(milestone_b.id.clone()),
                 priority: Some(0),
                 blocked_by: vec![milestone_a.id.clone()],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1500,7 +1576,7 @@ mod tests {
             &task.id,
             &UpdateTaskInput {
                 parent_id: Some(milestone_a.id.clone()),
-                ..Default::default()
+                    ..Default::default()
             },
         );
         assert!(matches!(
@@ -1522,6 +1598,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1532,6 +1609,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1542,6 +1620,7 @@ mod tests {
                 parent_id: Some(task.id.clone()),
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1553,6 +1632,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1563,6 +1643,7 @@ mod tests {
                 parent_id: Some(other_milestone.id.clone()),
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1572,7 +1653,7 @@ mod tests {
             &task.id,
             &UpdateTaskInput {
                 parent_id: Some(other_task.id.clone()),
-                ..Default::default()
+                    ..Default::default()
             },
         );
         assert!(matches!(result, Err(OsError::MaxDepthExceeded)));
@@ -1590,6 +1671,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1600,6 +1682,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![blocker.id.clone()],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1610,6 +1693,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![blocker.id.clone()],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1645,6 +1729,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1655,6 +1740,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![blocker.id.clone()],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1686,6 +1772,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1707,6 +1794,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1730,6 +1818,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1752,6 +1841,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1774,6 +1864,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1798,6 +1889,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1821,6 +1913,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1843,6 +1936,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1863,6 +1957,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1885,6 +1980,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1910,6 +2006,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1920,6 +2017,7 @@ mod tests {
                 parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![blocker.id.clone()],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1954,6 +2052,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1972,6 +2071,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2005,6 +2105,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2015,6 +2116,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2040,6 +2142,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2050,6 +2153,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2074,6 +2178,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2084,6 +2189,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2112,6 +2218,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2125,6 +2232,7 @@ mod tests {
             parent_id: Some(parent.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         });
 
         assert!(
@@ -2150,6 +2258,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2163,6 +2272,7 @@ mod tests {
             parent_id: Some(parent.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         });
 
         assert!(
@@ -2188,6 +2298,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2202,6 +2313,7 @@ mod tests {
             parent_id: Some(parent.id.clone()),
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         });
 
         assert!(
@@ -2227,6 +2339,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2237,6 +2350,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2247,10 +2361,8 @@ mod tests {
         let result = service.update(
             &orphan.id,
             &UpdateTaskInput {
-                description: None,
-                context: None,
                 parent_id: Some(target_parent.id.clone()),
-                priority: None,
+                ..Default::default()
             },
         );
 
@@ -2277,6 +2389,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2287,6 +2400,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2298,10 +2412,8 @@ mod tests {
         let result = service.update(
             &orphan.id,
             &UpdateTaskInput {
-                description: None,
-                context: None,
                 parent_id: Some(target_parent.id.clone()),
-                priority: None,
+                ..Default::default()
             },
         );
 
@@ -2329,6 +2441,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2339,6 +2452,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2349,6 +2463,7 @@ mod tests {
                 parent_id: Some(task.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2384,6 +2499,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2394,6 +2510,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2404,6 +2521,7 @@ mod tests {
                 parent_id: Some(task.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 

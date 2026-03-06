@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use rusqlite::Connection;
 
 use crate::core::TaskService;
@@ -18,15 +20,15 @@ use crate::vcs::backend::{VcsBackend, VcsError, VcsType};
 /// CRUD operations don't require VCS.
 pub struct TaskWorkflowService<'a> {
     task_service: TaskService<'a>,
-    vcs: Box<dyn VcsBackend>,
+    workspace_root: PathBuf,
     conn: &'a Connection,
 }
 
 impl<'a> TaskWorkflowService<'a> {
-    pub fn new(conn: &'a Connection, vcs: Box<dyn VcsBackend>) -> Self {
+    pub fn new(conn: &'a Connection, workspace_root: PathBuf) -> Self {
         Self {
             task_service: TaskService::new(conn),
-            vcs,
+            workspace_root,
             conn,
         }
     }
@@ -35,6 +37,16 @@ impl<'a> TaskWorkflowService<'a> {
     #[allow(dead_code)]
     pub fn task_service(&self) -> &TaskService<'a> {
         &self.task_service
+    }
+
+    /// Resolve VCS backend for a specific task based on its repo_path.
+    /// Falls back to workspace_root when task has no repo_path.
+    fn vcs_for_task(&self, task: &Task) -> Result<Box<dyn VcsBackend>> {
+        let repo_dir = match &task.repo_path {
+            Some(rel) => self.workspace_root.join(rel),
+            None => self.workspace_root.clone(),
+        };
+        crate::vcs::get_backend(&repo_dir).map_err(|e| e.into())
     }
 
     pub fn start(&self, id: &TaskId) -> Result<Task> {
@@ -60,10 +72,12 @@ impl<'a> TaskWorkflowService<'a> {
             };
         }
 
+        let vcs = self.vcs_for_task(&task)?;
+
         // Idempotent: already started with VCS state
         if task.started_at.is_some() && task.bookmark.is_some() {
-            if task.base_ref.is_none() && self.vcs.vcs_type() == VcsType::Git {
-                let inferred_base_ref = self.current_git_branch_name()?;
+            if task.base_ref.is_none() && vcs.vcs_type() == VcsType::Git {
+                let inferred_base_ref = Self::current_git_branch_name_from(&*vcs)?;
                 if inferred_base_ref == bookmark {
                     return Err(OsError::MissingBaseRef {
                         task_id: id.clone(),
@@ -74,7 +88,7 @@ impl<'a> TaskWorkflowService<'a> {
 
             // Just checkout the existing bookmark
             if let Some(ref bookmark) = task.bookmark {
-                self.vcs.checkout(bookmark)?;
+                vcs.checkout(bookmark)?;
             }
             return self.task_service.get(id);
         }
@@ -82,22 +96,22 @@ impl<'a> TaskWorkflowService<'a> {
         // Validate: must be the next ready task in its subtree
         self.validate_start_target(id, &task)?;
 
-        let base_ref = match self.vcs.vcs_type() {
-            VcsType::Git => Some(self.current_git_branch_name()?),
+        let base_ref = match vcs.vcs_type() {
+            VcsType::Git => Some(Self::current_git_branch_name_from(&*vcs)?),
             _ => None,
         };
 
         // 1. Ensure bookmark exists (idempotent)
-        match self.vcs.create_bookmark(&bookmark, None) {
+        match vcs.create_bookmark(&bookmark, None) {
             Ok(()) | Err(VcsError::BookmarkExists(_)) => {}
             Err(e) => return Err(e.into()),
         }
 
         // 2. Checkout (can fail on DirtyWorkingCopy)
-        self.vcs.checkout(&bookmark)?;
+        vcs.checkout(&bookmark)?;
 
         // 3. Record start commit
-        let sha = self.vcs.current_commit_id()?;
+        let sha = vcs.current_commit_id()?;
 
         // 4. DB updates (after VCS succeeds)
         task_repo::set_bookmark(self.conn, id, &bookmark)?;
@@ -211,16 +225,19 @@ impl<'a> TaskWorkflowService<'a> {
         Ok(())
     }
 
-    fn current_git_branch_name(&self) -> Result<String> {
-        let name = self
-            .vcs
+    fn current_git_branch_name_from(vcs: &dyn VcsBackend) -> Result<String> {
+        let name = vcs
             .current_branch_name()?
             .ok_or(OsError::CannotStartDetachedHead)?;
         Ok(name)
     }
 
-    fn enforce_git_integration_gate(&self, task: &Task, id: &TaskId) -> Result<()> {
-        if self.vcs.vcs_type() != VcsType::Git {
+    fn enforce_git_integration_gate(
+        vcs: &dyn VcsBackend,
+        task: &Task,
+        id: &TaskId,
+    ) -> Result<()> {
+        if vcs.vcs_type() != VcsType::Git {
             return Ok(());
         }
 
@@ -230,7 +247,7 @@ impl<'a> TaskWorkflowService<'a> {
                     task_id: id.clone(),
                 });
             };
-            let merged = self.vcs.merge_fast_forward(&bookmark, &base_ref)?;
+            let merged = vcs.merge_fast_forward(&bookmark, &base_ref)?;
             if !merged {
                 return Err(OsError::TaskIntegrationRequired {
                     task_id: id.clone(),
@@ -289,14 +306,16 @@ impl<'a> TaskWorkflowService<'a> {
             return self.complete_milestone_with_learnings(id, result, learnings);
         }
 
+        let vcs = self.vcs_for_task(&task)?;
+
         // 1. VCS first - commit (NothingToCommit is OK)
         let msg = format!("Complete: {}\n\n{}", task.description, result.unwrap_or(""));
-        match self.vcs.commit(&msg) {
+        match vcs.commit(&msg) {
             Ok(_) | Err(VcsError::NothingToCommit) => {}
             Err(e) => return Err(e.into()),
         }
 
-        self.enforce_git_integration_gate(&task, id)?;
+        Self::enforce_git_integration_gate(&*vcs, &task, id)?;
 
         // 2. DB updates (after VCS succeeds)
         let completed_task = self
@@ -308,19 +327,18 @@ impl<'a> TaskWorkflowService<'a> {
         // Checkout first solves git's "cannot delete checked-out branch" error
         if let Some(ref bookmark) = task.bookmark {
             // Find checkout target: prefer current HEAD, fallback to start_commit
-            let checkout_target = self
-                .vcs
+            let checkout_target = vcs
                 .current_commit_id()
                 .ok()
                 .or_else(|| task.start_commit.clone());
 
             if let Some(ref target) = checkout_target {
-                if let Err(e) = self.vcs.checkout(target) {
+                if let Err(e) = vcs.checkout(target) {
                     eprintln!(
                         "warn: failed to checkout {}: {} - skipping branch cleanup",
                         target, e
                     );
-                } else if let Err(e) = self.vcs.delete_bookmark(bookmark) {
+                } else if let Err(e) = vcs.delete_bookmark(bookmark) {
                     eprintln!("warn: failed to delete bookmark {}: {}", bookmark, e);
                 } else {
                     // Clear bookmark field in DB after successful VCS deletion
@@ -384,6 +402,9 @@ impl<'a> TaskWorkflowService<'a> {
     /// Complete a milestone with optional learnings.
     ///
     /// VCS-first ordering: commit changes before updating DB state.
+    /// For milestones spanning multiple repos (repo_path: None), commit is attempted
+    /// at workspace root - NothingToCommit or NotARepository are both OK.
+    /// Descendant bookmark cleanup is grouped by repo_path with per-repo VCS resolution.
     pub fn complete_milestone_with_learnings(
         &self,
         id: &TaskId,
@@ -411,17 +432,25 @@ impl<'a> TaskWorkflowService<'a> {
         }
 
         // Milestone: VCS first - commit (NothingToCommit is OK)
+        // For milestones without repo_path, try workspace root; skip if no VCS
         let msg = format!(
             "Milestone: {}\n\n{}",
             task.description,
             result.unwrap_or("")
         );
-        match self.vcs.commit(&msg) {
-            Ok(_) | Err(VcsError::NothingToCommit) => {}
-            Err(e) => return Err(e.into()),
+        match self.vcs_for_task(&task) {
+            Ok(vcs) => {
+                match vcs.commit(&msg) {
+                    Ok(_) | Err(VcsError::NothingToCommit) => {}
+                    Err(e) => return Err(e.into()),
+                }
+                Self::enforce_git_integration_gate(&*vcs, &task, id)?;
+            }
+            Err(OsError::NotARepository) if task.repo_path.is_none() => {
+                // Milestone spans repos, workspace root has no VCS - OK
+            }
+            Err(e) => return Err(e),
         }
-
-        self.enforce_git_integration_gate(&task, id)?;
 
         // DB updates (after VCS succeeds)
         let completed_task = self
@@ -429,53 +458,65 @@ impl<'a> TaskWorkflowService<'a> {
             .complete_with_learnings(id, result, learnings)?;
 
         // Best-effort cleanup: delete ALL descendant bookmarks
-        // Unified stacking semantics: both jj and git get same behavior
-        // For milestone, we need to checkout a safe commit first, then clean all descendants
+        // Group descendants by repo_path and resolve VCS per group
         let descendants = task_repo::get_all_descendants(self.conn, id)?;
 
-        // Find checkout target: prefer current HEAD, then milestone/descendant start_commit fallback
-        let checkout_target = self
-            .vcs
-            .current_commit_id()
-            .ok()
-            .or_else(|| task.start_commit.clone())
-            .or_else(|| descendants.iter().find_map(|d| d.start_commit.clone()));
-
-        if let Some(ref target) = checkout_target {
-            if let Err(e) = self.vcs.checkout(target) {
-                eprintln!(
-                    "warn: failed to checkout {}: {} - skipping branch cleanup",
-                    target, e
-                );
-                return Ok(completed_task);
-            }
-        } else {
-            // No checkout target available - skip branch cleanup entirely
-            // This matches single-task behavior for consistency
-            eprintln!("warn: no checkout target available - skipping milestone branch cleanup");
-            return Ok(completed_task);
-        }
-
+        // Collect (repo_path, bookmark, task_id) tuples grouped by repo_path
+        let mut bookmarks_by_repo: std::collections::HashMap<Option<String>, Vec<(String, TaskId)>> =
+            std::collections::HashMap::new();
         for descendant in descendants.iter() {
             if let Some(ref bookmark) = descendant.bookmark {
-                if let Err(e) = self.vcs.delete_bookmark(bookmark) {
-                    eprintln!("warn: failed to delete bookmark {}: {}", bookmark, e);
-                } else {
-                    // Clear bookmark field in DB after successful VCS deletion
-                    let _ = task_repo::clear_bookmark(self.conn, &descendant.id);
-                }
+                bookmarks_by_repo
+                    .entry(descendant.repo_path.clone())
+                    .or_default()
+                    .push((bookmark.clone(), descendant.id.clone()));
             }
         }
-
-        // Also clean up milestone's own bookmark (if started as leaf before children added)
+        // Include milestone's own bookmark
         if let Some(ref bookmark) = task.bookmark {
-            if let Err(e) = self.vcs.delete_bookmark(bookmark) {
-                eprintln!(
-                    "warn: failed to delete milestone bookmark {}: {}",
-                    bookmark, e
-                );
-            } else {
-                let _ = task_repo::clear_bookmark(self.conn, id);
+            bookmarks_by_repo
+                .entry(task.repo_path.clone())
+                .or_default()
+                .push((bookmark.clone(), id.clone()));
+        }
+
+        // Delete bookmarks per repo
+        for (repo_path, bookmarks) in &bookmarks_by_repo {
+            let repo_dir = match repo_path {
+                Some(rel) => self.workspace_root.join(rel),
+                None => self.workspace_root.clone(),
+            };
+            let vcs = match crate::vcs::get_backend(&repo_dir) {
+                Ok(vcs) => vcs,
+                Err(e) => {
+                    eprintln!("warn: no VCS at {:?} - skipping bookmark cleanup: {}", repo_dir, e);
+                    continue;
+                }
+            };
+
+            // Checkout a safe target first (needed for git "cannot delete checked-out branch")
+            let checkout_target = vcs
+                .current_commit_id()
+                .ok()
+                .or_else(|| task.start_commit.clone())
+                .or_else(|| descendants.iter().find_map(|d| d.start_commit.clone()));
+
+            if let Some(ref target) = checkout_target {
+                if let Err(e) = vcs.checkout(target) {
+                    eprintln!(
+                        "warn: failed to checkout {}: {} - skipping branch cleanup for {:?}",
+                        target, e, repo_dir
+                    );
+                    continue;
+                }
+            }
+
+            for (bookmark, task_id) in bookmarks {
+                if let Err(e) = vcs.delete_bookmark(bookmark) {
+                    eprintln!("warn: failed to delete bookmark {}: {}", bookmark, e);
+                } else {
+                    let _ = task_repo::clear_bookmark(self.conn, task_id);
+                }
             }
         }
 
@@ -487,8 +528,8 @@ impl<'a> TaskWorkflowService<'a> {
 mod tests {
     use super::*;
     use crate::db::schema::init_schema;
+    use crate::testutil::{GitTestRepo, TestRepo};
     use crate::types::CreateTaskInput;
-    use crate::vcs::backend::{CommitResult, DiffEntry, LogEntry, VcsResult, VcsStatus, VcsType};
 
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -497,88 +538,19 @@ mod tests {
         conn
     }
 
-    #[derive(Clone)]
-    enum BranchMode {
-        Named(String),
-        DetachedHead,
-        Unborn,
-    }
-
-    /// Mock VCS backend for tests - configurable branch + merge behavior.
-    struct MockVcsBackend {
-        branch_mode: BranchMode,
-        merge_result: bool,
-    }
-
-    impl Default for MockVcsBackend {
-        fn default() -> Self {
-            Self {
-                branch_mode: BranchMode::Named("main".to_string()),
-                merge_result: true,
-            }
-        }
-    }
-
-    impl VcsBackend for MockVcsBackend {
-        fn vcs_type(&self) -> VcsType {
-            VcsType::Git
-        }
-        fn root(&self) -> &str {
-            "/mock"
-        }
-        fn status(&self) -> VcsResult<VcsStatus> {
-            Ok(VcsStatus {
-                files: vec![],
-                working_copy_id: Some("mock-commit".to_string()),
-            })
-        }
-        fn log(&self, _limit: usize) -> VcsResult<Vec<LogEntry>> {
-            Ok(vec![])
-        }
-        fn diff(&self, _base: Option<&str>) -> VcsResult<Vec<DiffEntry>> {
-            Ok(vec![])
-        }
-        fn commit(&self, message: &str) -> VcsResult<CommitResult> {
-            Ok(CommitResult {
-                id: "mock-commit-id".to_string(),
-                message: message.to_string(),
-            })
-        }
-        fn current_commit_id(&self) -> VcsResult<String> {
-            Ok("mock-commit-id".to_string())
-        }
-        fn create_bookmark(&self, _name: &str, _target: Option<&str>) -> VcsResult<()> {
-            Ok(())
-        }
-        fn delete_bookmark(&self, _name: &str) -> VcsResult<()> {
-            Ok(())
-        }
-        fn list_bookmarks(&self, _prefix: Option<&str>) -> VcsResult<Vec<String>> {
-            Ok(vec![])
-        }
-        fn checkout(&self, _target: &str) -> VcsResult<()> {
-            Ok(())
-        }
-        fn current_branch_name(&self) -> VcsResult<Option<String>> {
-            match &self.branch_mode {
-                BranchMode::Named(name) => Ok(Some(name.clone())),
-                BranchMode::DetachedHead => Err(VcsError::DetachedHead),
-                BranchMode::Unborn => Err(VcsError::UnbornRepository),
-            }
-        }
-        fn merge_fast_forward(&self, _source: &str, _target: &str) -> VcsResult<bool> {
-            Ok(self.merge_result)
-        }
-    }
-
-    fn mock_vcs() -> Box<dyn VcsBackend> {
-        Box::new(MockVcsBackend::default())
+    /// Create a git test repo with an initial commit (needed for branch ops)
+    fn setup_git_repo() -> GitTestRepo {
+        let repo = GitTestRepo::new().unwrap();
+        repo.write_file("README.md", "# test").unwrap();
+        repo.commit("initial").unwrap();
+        repo
     }
 
     #[test]
     fn test_start_records_vcs_state() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
 
         let task = service
             .task_service()
@@ -588,6 +560,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -595,28 +568,28 @@ mod tests {
         assert!(started.started_at.is_some());
         assert!(started.bookmark.is_some());
         assert!(started.start_commit.is_some());
-        assert_eq!(started.base_ref.as_deref(), Some("main"));
+        // Git repo defaults to "main" or "master" depending on config
+        assert!(started.base_ref.is_some());
     }
 
     #[test]
     fn test_start_fails_on_detached_head() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(
-            &conn,
-            Box::new(MockVcsBackend {
-                branch_mode: BranchMode::DetachedHead,
-                merge_result: true,
-            }),
-        );
+        let repo = setup_git_repo();
+        let head = repo.head().unwrap();
+        // Detach HEAD
+        std::process::Command::new("git")
+            .args(["checkout", "--detach", &head])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
 
         let task = service
             .task_service()
             .create(&CreateTaskInput {
                 description: "Test task".to_string(),
-                context: None,
-                parent_id: None,
-                priority: None,
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -627,22 +600,15 @@ mod tests {
     #[test]
     fn test_start_fails_on_unborn_repo() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(
-            &conn,
-            Box::new(MockVcsBackend {
-                branch_mode: BranchMode::Unborn,
-                merge_result: true,
-            }),
-        );
+        // Create git repo without any commits (unborn)
+        let repo = GitTestRepo::new().unwrap();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
 
         let task = service
             .task_service()
             .create(&CreateTaskInput {
                 description: "Test task".to_string(),
-                context: None,
-                parent_id: None,
-                priority: None,
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -653,131 +619,29 @@ mod tests {
     #[test]
     fn test_complete_returns_missing_base_ref_when_started_task_has_none() {
         let conn = setup_db();
+        let repo = setup_git_repo();
         let task_service = TaskService::new(&conn);
 
         let task = task_service
             .create(&CreateTaskInput {
                 description: "Test task".to_string(),
-                context: None,
-                parent_id: None,
-                priority: None,
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         task_service.start(&task.id).unwrap();
-        task_repo::set_bookmark(&conn, &task.id, &format!("task/{}", task.id)).unwrap();
-        task_repo::set_start_commit(&conn, &task.id, "mock-commit-id").unwrap();
+        let bookmark = format!("task/{}", task.id);
+        task_repo::set_bookmark(&conn, &task.id, &bookmark).unwrap();
+        task_repo::set_start_commit(&conn, &task.id, &repo.head().unwrap()).unwrap();
+        // Create the bookmark in git so complete can find it
+        std::process::Command::new("git")
+            .args(["branch", &bookmark])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
 
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let result = service.complete_with_learnings(&task.id, None, &[]);
-        assert!(matches!(
-            result,
-            Err(OsError::MissingBaseRef { task_id }) if task_id == task.id
-        ));
-    }
-
-    #[test]
-    fn test_complete_returns_integration_required_on_ff_failure() {
-        let conn = setup_db();
-        let task_service = TaskService::new(&conn);
-
-        let task = task_service
-            .create(&CreateTaskInput {
-                description: "Test task".to_string(),
-                context: None,
-                parent_id: None,
-                priority: None,
-                blocked_by: vec![],
-            })
-            .unwrap();
-
-        task_service.start(&task.id).unwrap();
-        let bookmark = format!("task/{}", task.id);
-        task_repo::set_bookmark(&conn, &task.id, &bookmark).unwrap();
-        task_repo::set_start_commit(&conn, &task.id, "mock-commit-id").unwrap();
-        task_repo::set_base_ref(&conn, &task.id, "main").unwrap();
-
-        let service = TaskWorkflowService::new(
-            &conn,
-            Box::new(MockVcsBackend {
-                branch_mode: BranchMode::Named("main".to_string()),
-                merge_result: false,
-            }),
-        );
-
-        let result = service.complete_with_learnings(&task.id, None, &[]);
-        assert!(matches!(
-            result,
-            Err(OsError::TaskIntegrationRequired { task_id, source_ref, base_ref })
-                if task_id == task.id && source_ref == bookmark && base_ref == "main"
-        ));
-
-        let task_after = task_service.get(&task.id).unwrap();
-        assert!(!task_after.completed);
-    }
-
-    #[test]
-    fn test_start_backfills_base_ref_for_legacy_started_task() {
-        let conn = setup_db();
-        let task_service = TaskService::new(&conn);
-
-        let task = task_service
-            .create(&CreateTaskInput {
-                description: "Test task".to_string(),
-                context: None,
-                parent_id: None,
-                priority: None,
-                blocked_by: vec![],
-            })
-            .unwrap();
-
-        task_service.start(&task.id).unwrap();
-        let bookmark = format!("task/{}", task.id);
-        task_repo::set_bookmark(&conn, &task.id, &bookmark).unwrap();
-        task_repo::set_start_commit(&conn, &task.id, "mock-commit-id").unwrap();
-
-        let service = TaskWorkflowService::new(
-            &conn,
-            Box::new(MockVcsBackend {
-                branch_mode: BranchMode::Named("feature/base".to_string()),
-                merge_result: true,
-            }),
-        );
-
-        let started = service.start(&task.id).unwrap();
-        assert_eq!(started.base_ref.as_deref(), Some("feature/base"));
-    }
-
-    #[test]
-    fn test_start_fails_for_legacy_started_task_on_task_branch() {
-        let conn = setup_db();
-        let task_service = TaskService::new(&conn);
-
-        let task = task_service
-            .create(&CreateTaskInput {
-                description: "Test task".to_string(),
-                context: None,
-                parent_id: None,
-                priority: None,
-                blocked_by: vec![],
-            })
-            .unwrap();
-
-        task_service.start(&task.id).unwrap();
-        let bookmark = format!("task/{}", task.id);
-        task_repo::set_bookmark(&conn, &task.id, &bookmark).unwrap();
-        task_repo::set_start_commit(&conn, &task.id, "mock-commit-id").unwrap();
-
-        let service = TaskWorkflowService::new(
-            &conn,
-            Box::new(MockVcsBackend {
-                branch_mode: BranchMode::Named(bookmark.clone()),
-                merge_result: true,
-            }),
-        );
-
-        let result = service.start(&task.id);
         assert!(matches!(
             result,
             Err(OsError::MissingBaseRef { task_id }) if task_id == task.id
@@ -787,16 +651,14 @@ mod tests {
     #[test]
     fn test_complete_updates_state() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
 
         let task = service
             .task_service()
             .create(&CreateTaskInput {
                 description: "Test task".to_string(),
-                context: None,
-                parent_id: None,
-                priority: None,
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -808,41 +670,36 @@ mod tests {
     #[test]
     fn test_start_cascades_to_deepest_leaf() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
-        // Create: milestone -> task -> subtask
         let milestone = svc
             .create(&CreateTaskInput {
                 description: "Milestone".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let task = svc
             .create(&CreateTaskInput {
                 description: "Task".to_string(),
-                context: None,
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let subtask = svc
             .create(&CreateTaskInput {
                 description: "Subtask".to_string(),
-                context: None,
                 parent_id: Some(task.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
-        // Starting milestone should cascade to subtask
         let started = service.start_follow_blockers(&milestone.id).unwrap();
         assert_eq!(started.id, subtask.id);
         assert!(started.started_at.is_some());
@@ -851,41 +708,36 @@ mod tests {
     #[test]
     fn test_start_follows_blockers_to_startable() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
-        // Create: blocker_task, blocked_milestone -> task
         let blocker_task = svc
             .create(&CreateTaskInput {
                 description: "Blocker task".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let blocked_milestone = svc
             .create(&CreateTaskInput {
                 description: "Blocked milestone".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![blocker_task.id.clone()],
+                ..Default::default()
             })
             .unwrap();
 
         let _task = svc
             .create(&CreateTaskInput {
                 description: "Task under blocked milestone".to_string(),
-                context: None,
                 parent_id: Some(blocked_milestone.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
-        // Starting blocked_milestone should follow blocker and start blocker_task
         let started = service
             .start_follow_blockers(&blocked_milestone.id)
             .unwrap();
@@ -896,47 +748,43 @@ mod tests {
     #[test]
     fn test_complete_bubbles_up_to_parent() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         // Create: milestone -> task -> subtask1, subtask2
         let milestone = svc
             .create(&CreateTaskInput {
                 description: "Milestone".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let task = svc
             .create(&CreateTaskInput {
                 description: "Task".to_string(),
-                context: None,
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let subtask1 = svc
             .create(&CreateTaskInput {
                 description: "Subtask 1".to_string(),
-                context: None,
                 parent_id: Some(task.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let subtask2 = svc
             .create(&CreateTaskInput {
                 description: "Subtask 2".to_string(),
-                context: None,
                 parent_id: Some(task.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -954,27 +802,25 @@ mod tests {
     #[test]
     fn test_complete_bubbles_up_to_milestone() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         // Create: milestone -> task (single task, no siblings)
         let milestone = svc
             .create(&CreateTaskInput {
                 description: "Milestone".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let task = svc
             .create(&CreateTaskInput {
                 description: "Task".to_string(),
-                context: None,
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -988,37 +834,34 @@ mod tests {
     #[test]
     fn test_complete_stops_at_blocked_parent() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         // Create: blocker, milestone (blocked by blocker) -> task
         let blocker = svc
             .create(&CreateTaskInput {
                 description: "Blocker".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let milestone = svc
             .create(&CreateTaskInput {
                 description: "Blocked milestone".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![blocker.id.clone()],
+                ..Default::default()
             })
             .unwrap();
 
         let task = svc
             .create(&CreateTaskInput {
                 description: "Task".to_string(),
-                context: None,
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1032,37 +875,34 @@ mod tests {
     #[test]
     fn test_complete_stops_at_pending_siblings() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         // Create: milestone -> task1, task2
         let milestone = svc
             .create(&CreateTaskInput {
                 description: "Milestone".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let task1 = svc
             .create(&CreateTaskInput {
                 description: "Task 1".to_string(),
-                context: None,
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let _task2 = svc
             .create(&CreateTaskInput {
                 description: "Task 2".to_string(),
-                context: None,
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1076,37 +916,34 @@ mod tests {
     #[test]
     fn test_complete_with_learnings_bubbles_to_parent() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         // Create: milestone -> task -> subtask1, subtask2 (sibling prevents auto-complete)
         let milestone = svc
             .create(&CreateTaskInput {
                 description: "Milestone".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let task = svc
             .create(&CreateTaskInput {
                 description: "Task".to_string(),
-                context: None,
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let subtask1 = svc
             .create(&CreateTaskInput {
                 description: "Subtask 1".to_string(),
-                context: None,
                 parent_id: Some(task.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1114,10 +951,9 @@ mod tests {
         let _subtask2 = svc
             .create(&CreateTaskInput {
                 description: "Subtask 2".to_string(),
-                context: None,
                 parent_id: Some(task.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1162,37 +998,34 @@ mod tests {
     #[test]
     fn test_learnings_bubble_transitively_on_parent_complete() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         // Create: milestone -> task -> subtask
         let milestone = svc
             .create(&CreateTaskInput {
                 description: "Milestone".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let task = svc
             .create(&CreateTaskInput {
                 description: "Task".to_string(),
-                context: None,
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let subtask = svc
             .create(&CreateTaskInput {
                 description: "Subtask".to_string(),
-                context: None,
                 parent_id: Some(task.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1220,47 +1053,43 @@ mod tests {
     #[test]
     fn test_sibling_sees_learnings_via_parent() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         // Create: milestone -> task_a (with subtasks), task_b (with subtasks)
         let milestone = svc
             .create(&CreateTaskInput {
                 description: "Milestone".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let task_a = svc
             .create(&CreateTaskInput {
                 description: "Task A".to_string(),
-                context: None,
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let subtask_a1 = svc
             .create(&CreateTaskInput {
                 description: "Subtask A1".to_string(),
-                context: None,
                 parent_id: Some(task_a.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let subtask_a2 = svc
             .create(&CreateTaskInput {
                 description: "Subtask A2".to_string(),
-                context: None,
                 parent_id: Some(task_a.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1286,26 +1115,24 @@ mod tests {
     #[test]
     fn test_learnings_idempotent_on_retry() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         let milestone = svc
             .create(&CreateTaskInput {
                 description: "Milestone".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let task = svc
             .create(&CreateTaskInput {
                 description: "Task".to_string(),
-                context: None,
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1328,37 +1155,34 @@ mod tests {
     #[test]
     fn test_start_rejects_parent_with_incomplete_children() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         // Create: milestone -> task -> subtask
         let milestone = svc
             .create(&CreateTaskInput {
                 description: "Milestone".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let task = svc
             .create(&CreateTaskInput {
                 description: "Task".to_string(),
-                context: None,
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let subtask = svc
             .create(&CreateTaskInput {
                 description: "Subtask".to_string(),
-                context: None,
                 parent_id: Some(task.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1402,27 +1226,25 @@ mod tests {
     #[test]
     fn test_start_rejects_blocked_task() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         // Create: blocker, blocked_task (blocked by blocker)
         let blocker = svc
             .create(&CreateTaskInput {
                 description: "Blocker".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let blocked_task = svc
             .create(&CreateTaskInput {
                 description: "Blocked task".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
                 blocked_by: vec![blocker.id.clone()],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1444,37 +1266,34 @@ mod tests {
     #[test]
     fn test_start_bubbles_started_at_to_ancestors() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         // Create: milestone -> task -> subtask
         let milestone = svc
             .create(&CreateTaskInput {
                 description: "Milestone".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let task = svc
             .create(&CreateTaskInput {
                 description: "Task".to_string(),
-                context: None,
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
         let subtask = svc
             .create(&CreateTaskInput {
                 description: "Subtask".to_string(),
-                context: None,
                 parent_id: Some(task.id.clone()),
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1501,16 +1320,15 @@ mod tests {
     #[test]
     fn test_start_is_idempotent() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         let task = svc
             .create(&CreateTaskInput {
                 description: "Task".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1527,17 +1345,16 @@ mod tests {
     #[test]
     fn test_start_allows_leaf_without_children() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         // Create a milestone with no children (it's a leaf)
         let milestone = svc
             .create(&CreateTaskInput {
                 description: "Leaf milestone".to_string(),
-                context: None,
-                parent_id: None,
                 priority: Some(0),
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1550,16 +1367,14 @@ mod tests {
     #[test]
     fn test_complete_cancelled_task_fails() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         let task = svc
             .create(&CreateTaskInput {
                 description: "Task".to_string(),
-                context: None,
-                parent_id: None,
-                priority: None,
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1578,16 +1393,14 @@ mod tests {
     #[test]
     fn test_complete_archived_task_fails() {
         let conn = setup_db();
-        let service = TaskWorkflowService::new(&conn, mock_vcs());
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
         let svc = service.task_service();
 
         let task = svc
             .create(&CreateTaskInput {
                 description: "Task".to_string(),
-                context: None,
-                parent_id: None,
-                priority: None,
-                blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 

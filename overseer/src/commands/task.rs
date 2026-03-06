@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Args, Subcommand};
 use rusqlite::Connection;
 
@@ -6,7 +8,6 @@ use crate::db::task_repo;
 use crate::error::Result;
 use crate::id::TaskId;
 use crate::types::{CreateTaskInput, ListTasksFilter, Task, UpdateTaskInput};
-use crate::vcs::backend::VcsBackend;
 
 /// Parse TaskId from CLI string (requires prefix)
 fn parse_task_id(s: &str) -> std::result::Result<TaskId, String> {
@@ -67,6 +68,10 @@ pub struct CreateArgs {
 
     #[arg(long = "blocked-by", value_delimiter = ',', value_parser = parse_task_id)]
     pub blocked_by: Vec<TaskId>,
+
+    /// Relative path from workspace root to repo (e.g. "frontend")
+    #[arg(long)]
+    pub repo: Option<String>,
 }
 
 #[derive(Args)]
@@ -105,6 +110,10 @@ pub struct ListArgs {
     /// Show flat list instead of tree view (default). Human output only; JSON always returns flat array.
     #[arg(long)]
     pub flat: bool,
+
+    /// Filter by repo path (exact match)
+    #[arg(long)]
+    pub repo: Option<String>,
 }
 
 #[derive(Args)]
@@ -123,6 +132,10 @@ pub struct UpdateArgs {
 
     #[arg(long, value_parser = parse_task_id)]
     pub parent: Option<TaskId>,
+
+    /// Relative path from workspace root to repo
+    #[arg(long)]
+    pub repo: Option<String>,
 }
 
 #[derive(Args)]
@@ -217,6 +230,7 @@ pub fn handle(conn: &Connection, cmd: TaskCommand) -> Result<TaskResult> {
                 parent_id: args.parent,
                 priority: args.priority,
                 blocked_by: args.blocked_by,
+                repo_path: args.repo,
             };
             Ok(TaskResult::One(svc.create(&input)?))
         }
@@ -252,6 +266,7 @@ pub fn handle(conn: &Connection, cmd: TaskCommand) -> Result<TaskResult> {
                 completed: if args.completed { Some(true) } else { None },
                 depth,
                 archived,
+                repo_path: args.repo,
             };
             Ok(TaskResult::Many(svc.list(&filter)?))
         }
@@ -262,6 +277,7 @@ pub fn handle(conn: &Connection, cmd: TaskCommand) -> Result<TaskResult> {
                 context: args.context,
                 priority: args.priority,
                 parent_id: args.parent,
+                repo_path: args.repo,
             };
             Ok(TaskResult::One(svc.update(&args.id, &input)?))
         }
@@ -325,9 +341,9 @@ pub fn handle(conn: &Connection, cmd: TaskCommand) -> Result<TaskResult> {
 pub fn handle_workflow(
     conn: &Connection,
     cmd: TaskCommand,
-    vcs: Box<dyn VcsBackend>,
+    workspace_root: PathBuf,
 ) -> Result<TaskResult> {
-    let workflow = TaskWorkflowService::new(conn, vcs);
+    let workflow = TaskWorkflowService::new(conn, workspace_root);
 
     match cmd {
         TaskCommand::Start { id } => Ok(TaskResult::One(workflow.start_follow_blockers(&id)?)),
@@ -347,24 +363,42 @@ pub fn handle_workflow(
 pub fn handle_delete(
     conn: &Connection,
     cmd: TaskCommand,
-    vcs: Option<Box<dyn VcsBackend>>,
+    workspace_root: Option<PathBuf>,
 ) -> Result<TaskResult> {
     let TaskCommand::Delete { id } = cmd else {
         return handle(conn, cmd);
     };
 
-    // Prefetch bookmarks BEFORE cascade delete removes them
-    let bookmarks = task_repo::get_all_bookmarks(conn, &id)?;
+    // Prefetch bookmarks and repo_paths BEFORE cascade delete removes them
+    let descendants = task_repo::get_all_descendants(conn, &id)?;
+    let root_task = TaskService::new(conn).get(&id)?;
+
+    // Collect (bookmark, repo_path) pairs
+    let mut bookmark_repos: Vec<(String, Option<String>)> = Vec::new();
+    if let Some(ref bm) = root_task.bookmark {
+        bookmark_repos.push((bm.clone(), root_task.repo_path.clone()));
+    }
+    for desc in &descendants {
+        if let Some(ref bm) = desc.bookmark {
+            bookmark_repos.push((bm.clone(), desc.repo_path.clone()));
+        }
+    }
 
     // Delete task (cascades to children, learnings, blockers)
     let svc = TaskService::new(conn);
     svc.delete(&id)?;
 
-    // Best-effort bookmark cleanup if VCS available
-    if let Some(vcs) = vcs {
-        for bookmark in bookmarks {
-            if let Err(e) = vcs.delete_bookmark(&bookmark) {
-                eprintln!("warn: failed to delete bookmark {}: {}", bookmark, e);
+    // Best-effort bookmark cleanup if workspace_root available
+    if let Some(ref ws_root) = workspace_root {
+        for (bookmark, repo_path) in bookmark_repos {
+            let repo_dir = match &repo_path {
+                Some(rel) => ws_root.join(rel),
+                None => ws_root.clone(),
+            };
+            if let Ok(vcs) = crate::vcs::get_backend(&repo_dir) {
+                if let Err(e) = vcs.delete_bookmark(&bookmark) {
+                    eprintln!("warn: failed to delete bookmark {}: {}", bookmark, e);
+                }
             }
         }
     }
@@ -451,6 +485,7 @@ fn calculate_progress(conn: &Connection, root_id: Option<&TaskId>) -> Result<Tas
                 completed: None,
                 depth: None,
                 archived: None, // Include all (archived and non-archived)
+                ..Default::default()
             };
             svc.list(&filter)?
         }
@@ -490,6 +525,7 @@ fn get_descendants(conn: &Connection, root_id: &TaskId) -> Result<Vec<Task>> {
             completed: None,
             depth: None,
             archived: None, // Include all (archived and non-archived)
+            ..Default::default()
         })?;
 
         for child in children {
@@ -553,6 +589,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -564,6 +601,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(1),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -574,6 +612,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -606,6 +645,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -616,6 +656,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -626,6 +667,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(0),
                 blocked_by: vec![blocker.id.clone()],
+                ..Default::default()
             })
             .unwrap();
 
@@ -636,6 +678,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: Some(1),
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -668,6 +711,7 @@ mod tests {
                 parent_id: None,
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -678,6 +722,7 @@ mod tests {
                 parent_id: Some(milestone.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -688,6 +733,7 @@ mod tests {
                 parent_id: Some(task1.id.clone()),
                 priority: None,
                 blocked_by: vec![],
+                ..Default::default()
             })
             .unwrap();
 
@@ -722,6 +768,7 @@ mod tests {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -731,6 +778,7 @@ mod tests {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -740,6 +788,7 @@ mod tests {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -771,6 +820,7 @@ mod tests {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
@@ -780,6 +830,7 @@ mod tests {
             parent_id: None,
             priority: None,
             blocked_by: vec![],
+            ..Default::default()
         })
         .unwrap();
 
