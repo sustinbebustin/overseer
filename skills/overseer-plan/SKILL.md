@@ -17,8 +17,9 @@ Use `/overseer-plan` to convert any markdown planning document into trackable Ov
 
 ```
 /overseer-plan <markdown-file-path>
-/overseer-plan <file> --priority 3           # Set priority (1-5)
+/overseer-plan <file> --priority 1           # Set priority (0-2)
 /overseer-plan <file> --parent <task-id>     # Create as child of existing task
+/overseer-plan <file> --repo-path backend   # Set repoPath for single-repo tasks
 ```
 
 ## What It Does
@@ -79,7 +80,15 @@ await tasks.complete("<id>", { result: "...", learnings: [...] });  // Task (VCS
 
 **VCS Required**: `start` and `complete` require git (fail with `NotARepository` if none found). CRUD operations work without VCS.
 
-**Note**: Priority must be 1-5. Blockers cannot be ancestors or descendants.
+**Note**: Priority must be 0-2 (p0=highest, p1=default, p2=lowest). Blockers cannot be ancestors or descendants.
+
+## Multi-Repo Support
+
+Tasks support an optional `repoPath` field (relative path from workspace root to repo):
+
+- **Cross-repo milestones**: Leave `repoPath` unset (`null`/`undefined`) when the milestone spans multiple repos
+- **Repo-specific tasks**: Set `repoPath` to the relative path (e.g., `"frontend"`, `"backend"`) for tasks scoped to a single repo
+- **Filtering**: Use `repoPath` in `tasks.list()` to filter tasks by repo
 
 ## When NOT to Use
 

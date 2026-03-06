@@ -20,7 +20,7 @@ Basic creation:
 const milestone = await tasks.create({
   description: "<extracted-title>",
   context: `<full-markdown-content>`,
-  priority: <priority-if-provided-else-3>
+  priority: <priority-if-provided-else-1>
 });
 return milestone;
 ```
@@ -32,10 +32,24 @@ const task = await tasks.create({
   description: "<extracted-title>",
   context: `<full-markdown-content>`,
   parentId: "<parent-id>",
-  priority: <priority-if-provided-else-3>
+  priority: <priority-if-provided-else-1>
 });
 return task;
 ```
+
+With `--repo-path` option (single-repo plan):
+
+```javascript
+const milestone = await tasks.create({
+  description: "<extracted-title>",
+  context: `<full-markdown-content>`,
+  priority: <priority-if-provided-else-1>,
+  repoPath: "<repo-path>"
+});
+return milestone;
+```
+
+For **multi-repo plans** (milestone spans multiple repos), omit `repoPath` on the milestone and set it on children instead (see Step 7).
 
 Capture returned task ID for subsequent steps.
 
@@ -147,6 +161,33 @@ for (const sub of subtasks) {
   created.push(task);
 }
 return { milestone: milestone.id, subtasks: created };
+```
+
+### Multi-Repo Breakdown
+
+When a plan spans multiple repositories, omit `repoPath` on the milestone and set it per-child:
+
+```javascript
+// Milestone has no repoPath (spans repos)
+const milestone = await tasks.create({
+  description: "Full-stack feature",
+  context: `<full-markdown-content>`
+});
+
+const subtasks = [
+  { description: "Add API endpoint", context: "...", repoPath: "backend" },
+  { description: "Add UI component", context: "...", repoPath: "frontend" },
+  { description: "Update shared types", context: "...", repoPath: "packages/shared" }
+];
+
+for (const sub of subtasks) {
+  await tasks.create({
+    description: sub.description,
+    context: sub.context,
+    parentId: milestone.id,
+    repoPath: sub.repoPath
+  });
+}
 ```
 
 ### Epic-Level Breakdown (phases with sub-items)

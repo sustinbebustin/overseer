@@ -29,6 +29,7 @@ interface Task {
   cancelledAt: string | null;
   archived: boolean;            // Task is archived (hidden from default list)
   archivedAt: string | null;
+  repoPath?: string;            // Relative path from workspace root to repo (omitted if unset)
 }
 
 // Task with full context - returned by get(), nextReady()
@@ -86,6 +87,7 @@ declare const tasks: {
     depth?: 0 | 1 | 2;    // 0=milestones, 1=tasks, 2=subtasks
     type?: TaskType;      // Alias: "milestone"|"task"|"subtask" (mutually exclusive with depth)
     archived?: boolean | "all";   // true=only archived, "all"=include all, omit=hide archived
+    repoPath?: string;             // Filter by repo path
   }): Promise<Task[]>;
   get(id: string): Promise<TaskWithContext>;
   create(input: {
@@ -94,12 +96,14 @@ declare const tasks: {
     parentId?: string;
     priority?: 0 | 1 | 2;  // p0=highest, p1=default, p2=lowest
     blockedBy?: string[];          // Cannot be ancestors/descendants
+    repoPath?: string;             // Relative path from workspace root to repo
   }): Promise<Task>;
   update(id: string, input: {
     description?: string;
     context?: string;
     priority?: 0 | 1 | 2;
     parentId?: string;
+    repoPath?: string;             // Relative path from workspace root to repo
   }): Promise<Task>;
   start(id: string): Promise<Task>;
   complete(id: string, input?: { result?: string; learnings?: string[] }): Promise<Task>;

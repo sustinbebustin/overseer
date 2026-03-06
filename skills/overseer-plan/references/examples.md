@@ -175,3 +175,69 @@ Created as milestone with 3 tasks:
 
 View structure: execute `await tasks.list({ parentId: "task_01ABC" })`
 ```
+
+## Example 4: Multi-Repo Plan
+
+### Input (`fullstack-feature.md`)
+
+```markdown
+# Plan: Add Real-Time Notifications
+
+## Backend (backend/)
+1. Add WebSocket server to Express app
+2. Create notification service with DB persistence
+
+## Frontend (frontend/)
+1. Add WebSocket client hook
+2. Build notification dropdown component
+
+## Shared (packages/shared/)
+1. Define notification event types
+```
+
+### Execution
+
+```javascript
+// Milestone spans repos -> no repoPath
+const milestone = await tasks.create({
+  description: "Add Real-Time Notifications",
+  context: `<full-markdown-content>`,
+  priority: 1
+});
+
+const subtasks = [
+  { desc: "Add WebSocket server", done: "WS endpoint accepts connections, ping/pong works", repoPath: "backend" },
+  { desc: "Create notification service", done: "Notifications persisted to DB, retrieved via API", repoPath: "backend" },
+  { desc: "Add WebSocket client hook", done: "useNotifications hook connects and receives events", repoPath: "frontend" },
+  { desc: "Build notification dropdown", done: "Dropdown renders notifications, marks as read", repoPath: "frontend" },
+  { desc: "Define notification event types", done: "Shared types imported by both backend and frontend", repoPath: "packages/shared" }
+];
+
+for (const sub of subtasks) {
+  await tasks.create({
+    description: sub.desc,
+    context: `Part of 'Add Real-Time Notifications'.\n\nDone when: ${sub.done}`,
+    parentId: milestone.id,
+    repoPath: sub.repoPath
+  });
+}
+
+return { milestone: milestone.id, subtaskCount: subtasks.length };
+```
+
+### Output
+
+```
+Created milestone task_01ABC from plan
+
+Analyzed plan structure: Found 5 implementation steps across 3 repos
+Created 5 subtasks:
+- task_02XYZ: Add WebSocket server (backend)
+- task_03ABC: Create notification service (backend)
+- task_04DEF: Add WebSocket client hook (frontend)
+- task_05GHI: Build notification dropdown (frontend)
+- task_06JKL: Define notification event types (packages/shared)
+
+View structure: execute `await tasks.list({ parentId: "task_01ABC" })`
+Filter by repo: execute `await tasks.list({ parentId: "task_01ABC", repoPath: "backend" })`
+```
