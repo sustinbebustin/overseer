@@ -126,7 +126,8 @@ os task update TASK_ID \
   [-d "New description"] \
   [--context "New context"] \
   [--priority 0-2] \
-  [--parent NEW_PARENT_ID]
+  [--parent NEW_PARENT_ID] \
+  [--repo <REL_PATH> | --clear-repo]
 ```
 
 **Examples:**
@@ -139,7 +140,18 @@ os task update task_01JQAZ... --priority 1
 
 # Move to different parent
 os task update task_01JQAZ... --parent task_01JQBA...
+
+# Assign task to a repo under workspace root
+os task update task_01JQAZ... --repo frontend
+
+# Clear repo assignment (workspace-level task)
+os task update task_01JQAZ... --clear-repo
 ```
+
+**Repo assignment rules:**
+- `--repo` and `--clear-repo` are mutually exclusive
+- `--clear-repo` is explicit and idempotent (safe when already unset)
+- Changing or clearing repo path after task start is rejected
 
 ### `os task start`
 
@@ -191,6 +203,7 @@ os task complete TASK_ID [--result "Completion notes"] [--learning "..."]...
 - **VCS required** - fails with `NotARepository` if no jj/git
 - Sets `status = completed`, `completed_at = now()`
 - Commits changes (NothingToCommit treated as success)
+- Persists `commitSha` from the same VCS backend used during completion
 - In git mode requires fast-forward merge from task branch into `baseRef` before DB completion
 - On ff failure returns `TaskIntegrationRequired` and leaves task incomplete/in-progress
 - On legacy started tasks without `baseRef` returns `MissingBaseRef`
@@ -712,6 +725,10 @@ os data export --json
 - Backup
 - Version control for task plans (commit export files to git)
 
+**Integrity guarantee:**
+- Export is fail-fast and deterministic: command either writes a complete export or returns an error
+- No silent per-task drops are allowed during export assembly
+
 ## Additional Commands
 
 ### `os ui`
@@ -772,5 +789,13 @@ SQLite database default path:
 3. `<CWD>/.overseer/tasks.db` fallback
 
 When using `os ui`/`os mcp`, the resolved DB path is forwarded to host and pinned for all spawned CLI commands.
+
+Workflow workspace root resolution (`task start`, `task complete`, `task delete`) is derived from invocation context, not DB path:
+1. process CWD,
+2. nearest ancestor containing `.overseer/`,
+3. VCS root fallback,
+4. final fallback to CWD.
+
+This keeps `repoPath` resolution stable in multi-repo workspaces even when `--db` points elsewhere.
 
 **Note:** Run all `os` commands from your project root where `.overseer/` directory exists.

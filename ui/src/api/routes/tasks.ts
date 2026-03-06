@@ -154,9 +154,11 @@ const tasks = new Hono()
     }
 
     const args = ["task", "update", id];
-    if (body.description) args.push("-d", body.description);
-    if (body.context) args.push("--context", body.context);
+    if (body.description !== undefined) args.push("-d", body.description);
+    if (body.context !== undefined) args.push("--context", body.context);
     if (body.priority !== undefined) args.push("--priority", String(body.priority));
+    if (body.repoPath !== undefined) args.push("--repo", body.repoPath);
+    if (body.clearRepoPath === true) args.push("--clear-repo");
 
     // Must have at least one field to update
     if (args.length === 3) {
@@ -214,7 +216,7 @@ const tasks = new Hono()
     }
 
     const args = ["task", "complete", id];
-    if (body.result) args.push("--result", body.result);
+    if (body.result !== undefined) args.push("--result", body.result);
     if (body.learnings) {
       for (const learning of body.learnings) {
         args.push("--learning", learning);

@@ -69,6 +69,8 @@ export interface UpdateTaskInput {
   parentId?: string;
   /** Relative path from workspace root to repo */
   repoPath?: string;
+  /** Explicitly clear repo path (set to workspace-level task) */
+  clearRepoPath?: boolean;
 }
 
 export interface WorkflowRepoOptions {
@@ -119,7 +121,7 @@ export const tasks = {
       args.push("--all");
     }
     // Default (undefined or false) = hide archived (CLI default)
-    if (filter?.repoPath) args.push("--repo", filter.repoPath);
+    if (filter?.repoPath !== undefined) args.push("--repo", filter.repoPath);
     return decodeTasks(await callCli(args)).unwrap("tasks.list");
   },
 
@@ -136,13 +138,13 @@ export const tasks = {
    */
   async create(input: CreateTaskInput): Promise<Task> {
     const args = ["task", "create", "-d", input.description];
-    if (input.context) args.push("--context", input.context);
+    if (input.context !== undefined) args.push("--context", input.context);
     if (input.parentId) args.push("--parent", input.parentId);
     if (input.priority !== undefined) args.push("--priority", String(input.priority));
     if (input.blockedBy && input.blockedBy.length > 0) {
       args.push("--blocked-by", input.blockedBy.join(","));
     }
-    if (input.repoPath) args.push("--repo", input.repoPath);
+    if (input.repoPath !== undefined) args.push("--repo", input.repoPath);
     return decodeTask(await callCli(args)).unwrap("tasks.create");
   },
 
@@ -151,12 +153,17 @@ export const tasks = {
    * Returns task without context chain or inherited learnings.
    */
   async update(id: string, input: UpdateTaskInput): Promise<Task> {
+    if (input.repoPath !== undefined && input.clearRepoPath === true) {
+      throw new Error("repoPath and clearRepoPath are mutually exclusive");
+    }
+
     const args = ["task", "update", id];
-    if (input.description) args.push("-d", input.description);
-    if (input.context) args.push("--context", input.context);
+    if (input.description !== undefined) args.push("-d", input.description);
+    if (input.context !== undefined) args.push("--context", input.context);
     if (input.priority !== undefined) args.push("--priority", String(input.priority));
     if (input.parentId) args.push("--parent", input.parentId);
-    if (input.repoPath) args.push("--repo", input.repoPath);
+    if (input.repoPath !== undefined) args.push("--repo", input.repoPath);
+    if (input.clearRepoPath === true) args.push("--clear-repo");
     return decodeTask(await callCli(args)).unwrap("tasks.update");
   },
 
@@ -187,7 +194,7 @@ export const tasks = {
     options?: { result?: string; learnings?: string[]; repoPath?: string }
   ): Promise<Task> {
     const args = ["task", "complete", id];
-    if (options?.result) args.push("--result", options.result);
+    if (options?.result !== undefined) args.push("--result", options.result);
     if (options?.learnings) {
       for (const learning of options.learnings) {
         args.push("--learning", learning);

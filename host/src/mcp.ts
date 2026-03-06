@@ -88,6 +88,7 @@ declare const tasks: {
     priority?: 0 | 1 | 2;
     parentId?: string;
     repoPath?: string;
+    clearRepoPath?: boolean;
   }): Promise<Task>;
   start(id: string, options?: { repoPath?: string }): Promise<Task>;  // VCS required: creates bookmark, records start commit
   complete(id: string, options?: { result?: string; learnings?: string[]; repoPath?: string }): Promise<Task>;  // VCS required: commits changes (NothingToCommit = success)

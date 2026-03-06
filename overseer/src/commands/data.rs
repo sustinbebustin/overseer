@@ -79,36 +79,31 @@ pub(crate) fn export_data(conn: &Connection, output: Option<PathBuf>) -> Result<
     // Get all tasks including archived (archived: None = include all)
     let filter = ListTasksFilter {
         archived: None,
-            ..Default::default()
+        ..Default::default()
     };
     let tasks = task_repo::list_tasks(conn, &filter)?;
-    let export_tasks: Vec<ExportTask> = tasks
-        .iter()
-        .filter_map(|t| {
-            task_repo::get_task(conn, &t.id)
-                .ok()
-                .flatten()
-                .map(|full_task| ExportTask {
-                    id: full_task.id,
-                    parent_id: full_task.parent_id,
-                    description: full_task.description,
-                    context: full_task.context,
-                    result: full_task.result,
-                    priority: full_task.priority,
-                    completed: full_task.completed,
-                    completed_at: full_task.completed_at,
-                    cancelled: full_task.cancelled,
-                    cancelled_at: full_task.cancelled_at,
-                    archived: full_task.archived,
-                    archived_at: full_task.archived_at,
-                    created_at: full_task.created_at,
-                    updated_at: full_task.updated_at,
-                    started_at: full_task.started_at,
-                    commit_sha: full_task.commit_sha,
-                    base_ref: full_task.base_ref,
-                })
-        })
-        .collect();
+    let mut export_tasks: Vec<ExportTask> = Vec::with_capacity(tasks.len());
+    for full_task in &tasks {
+        export_tasks.push(ExportTask {
+            id: full_task.id.clone(),
+            parent_id: full_task.parent_id.clone(),
+            description: full_task.description.clone(),
+            context: full_task.context.clone(),
+            result: full_task.result.clone(),
+            priority: full_task.priority,
+            completed: full_task.completed,
+            completed_at: full_task.completed_at,
+            cancelled: full_task.cancelled,
+            cancelled_at: full_task.cancelled_at,
+            archived: full_task.archived,
+            archived_at: full_task.archived_at,
+            created_at: full_task.created_at,
+            updated_at: full_task.updated_at,
+            started_at: full_task.started_at,
+            commit_sha: full_task.commit_sha.clone(),
+            base_ref: full_task.base_ref.clone(),
+        });
+    }
 
     // Get all learnings
     let mut all_learnings = Vec::new();
@@ -119,14 +114,12 @@ pub(crate) fn export_data(conn: &Connection, output: Option<PathBuf>) -> Result<
 
     // Get all blocker relations
     let mut blockers = Vec::new();
-    for task in &export_tasks {
-        if let Some(full_task) = task_repo::get_task(conn, &task.id)? {
-            for blocker_id in &full_task.blocked_by {
-                blockers.push(BlockerRelation {
-                    task_id: task.id.clone(),
-                    blocker_id: blocker_id.clone(),
-                });
-            }
+    for full_task in &tasks {
+        for blocker_id in &full_task.blocked_by {
+            blockers.push(BlockerRelation {
+                task_id: full_task.id.clone(),
+                blocker_id: blocker_id.clone(),
+            });
         }
     }
 

@@ -163,6 +163,7 @@ pub struct UpdateTaskInput {
     pub priority: Option<i32>,
     pub parent_id: Option<TaskId>,
     pub repo_path: Option<String>,
+    pub clear_repo_path: bool,
 }
 
 #[derive(Debug, Clone)]

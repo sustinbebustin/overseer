@@ -133,6 +133,21 @@ export interface TaskProgress {
   blocked: number;   // !completed && effectivelyBlocked
 }
 
+export interface UpdateTaskRequest {
+  description?: string;
+  context?: string;
+  priority?: Priority;
+  /** Relative path from workspace root to repo */
+  repoPath?: string;
+  /** Explicitly clear repo path (workspace-level task) */
+  clearRepoPath?: boolean;
+}
+
+export interface CompleteTaskRequest {
+  result?: string;
+  learnings?: string[];
+}
+
 /**
  * CLI command errors
  */

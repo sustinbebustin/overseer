@@ -232,11 +232,7 @@ impl<'a> TaskWorkflowService<'a> {
         Ok(name)
     }
 
-    fn enforce_git_integration_gate(
-        vcs: &dyn VcsBackend,
-        task: &Task,
-        id: &TaskId,
-    ) -> Result<()> {
+    fn enforce_git_integration_gate(vcs: &dyn VcsBackend, task: &Task, id: &TaskId) -> Result<()> {
         if vcs.vcs_type() != VcsType::Git {
             return Ok(());
         }
@@ -315,12 +311,17 @@ impl<'a> TaskWorkflowService<'a> {
             Err(e) => return Err(e.into()),
         }
 
+        let commit_sha = vcs.current_commit_id().ok();
+
         Self::enforce_git_integration_gate(&*vcs, &task, id)?;
 
         // 2. DB updates (after VCS succeeds)
-        let completed_task = self
-            .task_service
-            .complete_with_learnings(id, result, learnings)?;
+        let completed_task = self.task_service.complete_with_learnings_and_commit_sha(
+            id,
+            result,
+            learnings,
+            commit_sha.as_deref(),
+        )?;
 
         // 3. Best-effort cleanup: checkout safe target then delete bookmark/branch
         // Unified stacking semantics: both jj and git get same behavior
@@ -386,7 +387,7 @@ impl<'a> TaskWorkflowService<'a> {
             if parent.depth == Some(0) {
                 self.complete_milestone(&parent_id, None)?;
             } else {
-                self.task_service.complete(&parent_id, None)?;
+                self.complete(&parent_id, None)?;
             }
 
             current_id = parent_id;
@@ -444,7 +445,86 @@ impl<'a> TaskWorkflowService<'a> {
                     Ok(_) | Err(VcsError::NothingToCommit) => {}
                     Err(e) => return Err(e.into()),
                 }
+                let commit_sha = vcs.current_commit_id().ok();
                 Self::enforce_git_integration_gate(&*vcs, &task, id)?;
+
+                // DB updates (after VCS succeeds)
+                let completed_task = self.task_service.complete_with_learnings_and_commit_sha(
+                    id,
+                    result,
+                    learnings,
+                    commit_sha.as_deref(),
+                )?;
+
+                // Best-effort cleanup: delete ALL descendant bookmarks
+                // Group descendants by repo_path and resolve VCS per group
+                let descendants = task_repo::get_all_descendants(self.conn, id)?;
+
+                // Collect (repo_path, bookmark, task_id) tuples grouped by repo_path
+                let mut bookmarks_by_repo: std::collections::HashMap<
+                    Option<String>,
+                    Vec<(String, TaskId)>,
+                > = std::collections::HashMap::new();
+                for descendant in descendants.iter() {
+                    if let Some(ref bookmark) = descendant.bookmark {
+                        bookmarks_by_repo
+                            .entry(descendant.repo_path.clone())
+                            .or_default()
+                            .push((bookmark.clone(), descendant.id.clone()));
+                    }
+                }
+                // Include milestone's own bookmark
+                if let Some(ref bookmark) = task.bookmark {
+                    bookmarks_by_repo
+                        .entry(task.repo_path.clone())
+                        .or_default()
+                        .push((bookmark.clone(), id.clone()));
+                }
+
+                // Delete bookmarks per repo
+                for (repo_path, bookmarks) in &bookmarks_by_repo {
+                    let repo_dir = match repo_path {
+                        Some(rel) => self.workspace_root.join(rel),
+                        None => self.workspace_root.clone(),
+                    };
+                    let vcs = match crate::vcs::get_backend(&repo_dir) {
+                        Ok(vcs) => vcs,
+                        Err(e) => {
+                            eprintln!(
+                                "warn: no VCS at {:?} - skipping bookmark cleanup: {}",
+                                repo_dir, e
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Checkout a safe target first (needed for git "cannot delete checked-out branch")
+                    let checkout_target = vcs
+                        .current_commit_id()
+                        .ok()
+                        .or_else(|| task.start_commit.clone())
+                        .or_else(|| descendants.iter().find_map(|d| d.start_commit.clone()));
+
+                    if let Some(ref target) = checkout_target {
+                        if let Err(e) = vcs.checkout(target) {
+                            eprintln!(
+                                "warn: failed to checkout {}: {} - skipping branch cleanup for {:?}",
+                                target, e, repo_dir
+                            );
+                            continue;
+                        }
+                    }
+
+                    for (bookmark, task_id) in bookmarks {
+                        if let Err(e) = vcs.delete_bookmark(bookmark) {
+                            eprintln!("warn: failed to delete bookmark {}: {}", bookmark, e);
+                        } else {
+                            let _ = task_repo::clear_bookmark(self.conn, task_id);
+                        }
+                    }
+                }
+
+                return Ok(completed_task);
             }
             Err(OsError::NotARepository) if task.repo_path.is_none() => {
                 // Milestone spans repos, workspace root has no VCS - OK
@@ -455,15 +535,17 @@ impl<'a> TaskWorkflowService<'a> {
         // DB updates (after VCS succeeds)
         let completed_task = self
             .task_service
-            .complete_with_learnings(id, result, learnings)?;
+            .complete_with_learnings_and_commit_sha(id, result, learnings, None)?;
 
         // Best-effort cleanup: delete ALL descendant bookmarks
         // Group descendants by repo_path and resolve VCS per group
         let descendants = task_repo::get_all_descendants(self.conn, id)?;
 
         // Collect (repo_path, bookmark, task_id) tuples grouped by repo_path
-        let mut bookmarks_by_repo: std::collections::HashMap<Option<String>, Vec<(String, TaskId)>> =
-            std::collections::HashMap::new();
+        let mut bookmarks_by_repo: std::collections::HashMap<
+            Option<String>,
+            Vec<(String, TaskId)>,
+        > = std::collections::HashMap::new();
         for descendant in descendants.iter() {
             if let Some(ref bookmark) = descendant.bookmark {
                 bookmarks_by_repo
@@ -489,7 +571,10 @@ impl<'a> TaskWorkflowService<'a> {
             let vcs = match crate::vcs::get_backend(&repo_dir) {
                 Ok(vcs) => vcs,
                 Err(e) => {
-                    eprintln!("warn: no VCS at {:?} - skipping bookmark cleanup: {}", repo_dir, e);
+                    eprintln!(
+                        "warn: no VCS at {:?} - skipping bookmark cleanup: {}",
+                        repo_dir, e
+                    );
                     continue;
                 }
             };
@@ -665,6 +750,86 @@ mod tests {
         let completed = service.complete(&task.id, Some("Done")).unwrap();
         assert!(completed.completed);
         assert_eq!(completed.result, Some("Done".to_string()));
+        assert!(completed.commit_sha.is_some());
+    }
+
+    #[test]
+    fn test_workflow_complete_sets_commit_sha_from_workflow_vcs_backend() {
+        let conn = setup_db();
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
+
+        let task = service
+            .task_service()
+            .create(&CreateTaskInput {
+                description: "Commit SHA provenance task".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let completed = service.complete(&task.id, None).unwrap();
+        assert!(completed.completed);
+
+        let expected_sha = crate::vcs::get_backend(repo.path())
+            .unwrap()
+            .current_commit_id()
+            .unwrap();
+        assert_eq!(completed.commit_sha, Some(expected_sha));
+    }
+
+    #[test]
+    fn test_bubble_up_uses_workflow_invariants_for_parent_completion() {
+        let conn = setup_db();
+        let repo = setup_git_repo();
+        let service = TaskWorkflowService::new(&conn, repo.path().to_path_buf());
+        let svc = service.task_service();
+
+        // Build hierarchy: milestone -> parent_task -> child_task
+        let milestone = svc
+            .create(&CreateTaskInput {
+                description: "Milestone".to_string(),
+                priority: Some(0),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let parent_task = svc
+            .create(&CreateTaskInput {
+                description: "Parent task".to_string(),
+                parent_id: Some(milestone.id.clone()),
+                priority: Some(0),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let child_task = svc
+            .create(&CreateTaskInput {
+                description: "Child task".to_string(),
+                parent_id: Some(parent_task.id.clone()),
+                priority: Some(0),
+                ..Default::default()
+            })
+            .unwrap();
+
+        // Seed parent as started git task with bookmark but missing base_ref.
+        // Bubble-up must route through workflow completion and fail MissingBaseRef.
+        svc.start(&parent_task.id).unwrap();
+        let parent_bookmark = format!("task/{}", parent_task.id);
+        task_repo::set_bookmark(&conn, &parent_task.id, &parent_bookmark).unwrap();
+        task_repo::set_start_commit(&conn, &parent_task.id, &repo.head().unwrap()).unwrap();
+
+        std::process::Command::new("git")
+            .args(["branch", &parent_bookmark])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+
+        let result = service.complete(&child_task.id, None);
+        assert!(matches!(result, Err(OsError::MissingBaseRef { .. })));
+
+        // Parent must remain incomplete since bubble-up completion failed closed.
+        let parent_after = svc.get(&parent_task.id).unwrap();
+        assert!(!parent_after.completed);
     }
 
     #[test]

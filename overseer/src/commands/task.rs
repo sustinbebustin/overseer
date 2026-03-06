@@ -117,6 +117,7 @@ pub struct ListArgs {
 }
 
 #[derive(Args)]
+#[command(group = clap::ArgGroup::new("repo_update_mode").multiple(false))]
 pub struct UpdateArgs {
     #[arg(value_parser = parse_task_id)]
     pub id: TaskId,
@@ -134,8 +135,12 @@ pub struct UpdateArgs {
     pub parent: Option<TaskId>,
 
     /// Relative path from workspace root to repo
-    #[arg(long)]
+    #[arg(long, group = "repo_update_mode")]
     pub repo: Option<String>,
+
+    /// Clear repo path (make task workspace-level)
+    #[arg(long = "clear-repo", group = "repo_update_mode")]
+    pub clear_repo: bool,
 }
 
 #[derive(Args)]
@@ -278,6 +283,7 @@ pub fn handle(conn: &Connection, cmd: TaskCommand) -> Result<TaskResult> {
                 priority: args.priority,
                 parent_id: args.parent,
                 repo_path: args.repo,
+                clear_repo_path: args.clear_repo,
             };
             Ok(TaskResult::One(svc.update(&args.id, &input)?))
         }

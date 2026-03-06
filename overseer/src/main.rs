@@ -331,13 +331,39 @@ fn default_db_path_from(base_dir: &std::path::Path) -> PathBuf {
     base.join(".overseer").join("tasks.db")
 }
 
-/// Derive workspace root from DB path: db is at WORKSPACE/.overseer/tasks.db
-fn workspace_root_from_db(db_path: &std::path::Path) -> PathBuf {
-    db_path
-        .parent() // .overseer/
-        .and_then(|p| p.parent()) // workspace/
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf()
+/// Resolve workflow workspace root from invocation context (not DB location).
+///
+/// Resolution order:
+/// 1. Start from process CWD
+/// 2. Walk ancestors for `.overseer` marker directory
+/// 3. Fallback to VCS root detection
+/// 4. Final fallback to CWD
+fn workspace_root_from_invocation() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    workspace_root_from_invocation_dir(&cwd)
+}
+
+fn workspace_root_from_invocation_dir(start_dir: &std::path::Path) -> PathBuf {
+    if let Some(workspace_root) = find_workspace_marker_root(start_dir) {
+        return workspace_root;
+    }
+
+    let (_, vcs_root) = vcs::detect_vcs_type(start_dir);
+    vcs_root.unwrap_or_else(|| start_dir.to_path_buf())
+}
+
+fn find_workspace_marker_root(start_dir: &std::path::Path) -> Option<PathBuf> {
+    let mut current = start_dir.to_path_buf();
+    loop {
+        let marker = current.join(".overseer");
+        if marker.exists() && marker.is_dir() {
+            return Some(current);
+        }
+
+        if !current.pop() {
+            return None;
+        }
+    }
 }
 
 fn main() {
@@ -425,11 +451,11 @@ fn run(command: &Command, db_path: &PathBuf) -> error::Result<String> {
             // Delete is best-effort VCS cleanup (works without VCS)
             let result = match &cloned_cmd {
                 TaskCommand::Start { .. } | TaskCommand::Complete(_) => {
-                    let workspace_root = workspace_root_from_db(db_path);
+                    let workspace_root = workspace_root_from_invocation();
                     task::handle_workflow(&conn, cloned_cmd, workspace_root)?
                 }
                 TaskCommand::Delete { .. } => {
-                    let workspace_root = workspace_root_from_db(db_path);
+                    let workspace_root = workspace_root_from_invocation();
                     task::handle_delete(&conn, cloned_cmd, Some(workspace_root))?
                 }
                 _ => task::handle(&conn, cloned_cmd)?,
@@ -526,6 +552,7 @@ fn clone_task_cmd(cmd: &TaskCommand) -> TaskCommand {
             priority: args.priority,
             parent: args.parent.clone(),
             repo: args.repo.clone(),
+            clear_repo: args.clear_repo,
         }),
         TaskCommand::Start { id } => TaskCommand::Start { id: id.clone() },
         TaskCommand::Complete(args) => TaskCommand::Complete(task::CompleteArgs {
@@ -601,5 +628,47 @@ fn clone_data_cmd(cmd: &DataCommand) -> DataCommand {
         DataCommand::Export { output } => DataCommand::Export {
             output: output.clone(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn workspace_root_prefers_overseer_marker_ancestor() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("app");
+        std::fs::create_dir_all(root.join(".overseer")).unwrap();
+
+        let nested = root.join("frontend").join("src");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let resolved = workspace_root_from_invocation_dir(&nested);
+        assert_eq!(resolved, root);
+    }
+
+    #[test]
+    fn workspace_root_falls_back_to_vcs_root_without_marker() {
+        let temp = TempDir::new().unwrap();
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(repo_root.join(".git")).unwrap();
+
+        let nested = repo_root.join("src").join("lib");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let resolved = workspace_root_from_invocation_dir(&nested);
+        assert_eq!(resolved, repo_root);
+    }
+
+    #[test]
+    fn workspace_root_falls_back_to_start_dir_when_no_marker_or_vcs() {
+        let temp = TempDir::new().unwrap();
+        let start = temp.path().join("plain").join("dir");
+        std::fs::create_dir_all(&start).unwrap();
+
+        let resolved = workspace_root_from_invocation_dir(&start);
+        assert_eq!(resolved, start);
     }
 }

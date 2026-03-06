@@ -13,19 +13,13 @@ import {
   decodeTaskWithContextOrNull,
   decodeLearnings,
 } from "./decoder.js";
-import { CliError, isTaskId, type Priority } from "./types.js";
-
-// Request body types
-interface UpdateTaskRequest {
-  description?: string;
-  context?: string;
-  priority?: Priority;
-}
-
-interface CompleteTaskRequest {
-  result?: string;
-  learnings?: string[];
-}
+import {
+  CliError,
+  isTaskId,
+  type Priority,
+  type UpdateTaskRequest,
+  type CompleteTaskRequest,
+} from "./types.js";
 
 interface ApiError {
   error: string;
@@ -74,6 +68,10 @@ function isString(v: unknown): v is string {
 
 function isNumber(v: unknown): v is number {
   return typeof v === "number";
+}
+
+function isBoolean(v: unknown): v is boolean {
+  return typeof v === "boolean";
 }
 
 function isPriority(v: unknown): v is Priority {
@@ -174,19 +172,37 @@ function createTaskRoutes() {
           body.context = raw.context;
         }
         if (raw.priority !== undefined) {
-          if (!isPriority(raw.priority)) {
+          if (!isNumber(raw.priority) || !isPriority(raw.priority)) {
             return c.json({ error: `Invalid priority: ${raw.priority}` }, 400);
           }
           body.priority = raw.priority;
+        }
+        if (raw.repoPath !== undefined) {
+          if (!isString(raw.repoPath)) {
+            return c.json({ error: "repoPath must be string" }, 400);
+          }
+          body.repoPath = raw.repoPath;
+        }
+        if (raw.clearRepoPath !== undefined) {
+          if (!isBoolean(raw.clearRepoPath)) {
+            return c.json({ error: "clearRepoPath must be boolean" }, 400);
+          }
+          body.clearRepoPath = raw.clearRepoPath;
+        }
+
+        if (body.repoPath !== undefined && body.clearRepoPath === true) {
+          return c.json({ error: "repoPath and clearRepoPath are mutually exclusive" }, 400);
         }
       } catch {
         return c.json({ error: "Invalid JSON body" }, 400);
       }
 
       const args = ["task", "update", id];
-      if (body.description) args.push("-d", body.description);
-      if (body.context) args.push("--context", body.context);
+      if (body.description !== undefined) args.push("-d", body.description);
+      if (body.context !== undefined) args.push("--context", body.context);
       if (body.priority !== undefined) args.push("--priority", String(body.priority));
+      if (body.repoPath !== undefined) args.push("--repo", body.repoPath);
+      if (body.clearRepoPath === true) args.push("--clear-repo");
 
       if (args.length === 3) {
         return c.json({ error: "No fields to update" }, 400);
@@ -251,7 +267,7 @@ function createTaskRoutes() {
       }
 
       const args = ["task", "complete", id];
-      if (body.result) args.push("--result", body.result);
+      if (body.result !== undefined) args.push("--result", body.result);
       if (body.learnings) {
         for (const learning of body.learnings) {
           args.push("--learning", learning);

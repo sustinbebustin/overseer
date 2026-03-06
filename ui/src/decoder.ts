@@ -405,7 +405,7 @@ export function decodeUpdateTaskRequest(v: unknown): Result<UpdateTaskRequest, D
     return Result.err(new DecodeError({ message: "UpdateTaskRequest must be object" }));
   }
 
-  const { description, context, priority } = v;
+  const { description, context, priority, repoPath, clearRepoPath } = v;
 
   const req: UpdateTaskRequest = {};
 
@@ -426,6 +426,24 @@ export function decodeUpdateTaskRequest(v: unknown): Result<UpdateTaskRequest, D
       return Result.err(new DecodeError({ message: `Invalid priority: ${priority}` }));
     }
     req.priority = priority;
+  }
+  if (repoPath !== undefined) {
+    if (!isString(repoPath)) {
+      return Result.err(new DecodeError({ message: "repoPath must be string" }));
+    }
+    req.repoPath = repoPath;
+  }
+  if (clearRepoPath !== undefined) {
+    if (!isBoolean(clearRepoPath)) {
+      return Result.err(new DecodeError({ message: "clearRepoPath must be boolean" }));
+    }
+    req.clearRepoPath = clearRepoPath;
+  }
+
+  if (req.repoPath !== undefined && req.clearRepoPath === true) {
+    return Result.err(
+      new DecodeError({ message: "repoPath and clearRepoPath are mutually exclusive" })
+    );
   }
 
   return Result.ok(req);

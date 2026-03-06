@@ -133,6 +133,13 @@ impl<'a> TaskService<'a> {
         }
 
         // Validate repo_path if provided
+        if input.repo_path.is_some() && input.clear_repo_path {
+            return Err(OsError::InvalidRepoPath {
+                path: "<conflict>".to_string(),
+                reason: "cannot provide repo_path and clear_repo_path together".to_string(),
+            });
+        }
+
         if let Some(ref repo_path) = input.repo_path {
             validate_repo_path(repo_path)?;
             // Cannot change repo_path after task is started (would orphan VCS bookmark)
@@ -141,6 +148,18 @@ impl<'a> TaskService<'a> {
             if task.started_at.is_some() {
                 return Err(OsError::InvalidRepoPath {
                     path: repo_path.clone(),
+                    reason: "cannot change repo_path after task is started".to_string(),
+                });
+            }
+        }
+
+        if input.clear_repo_path {
+            // Cannot clear repo_path after task is started (would orphan VCS bookmark)
+            let task = task_repo::get_task(self.conn, id)?
+                .ok_or_else(|| OsError::TaskNotFound(id.clone()))?;
+            if task.started_at.is_some() {
+                return Err(OsError::InvalidRepoPath {
+                    path: task.repo_path.unwrap_or_else(|| "<none>".to_string()),
                     reason: "cannot change repo_path after task is started".to_string(),
                 });
             }
@@ -223,6 +242,7 @@ impl<'a> TaskService<'a> {
         Ok(task)
     }
 
+    #[allow(dead_code)] // Used by CLI non-workflow paths and tests
     pub fn complete(&self, id: &TaskId, result: Option<&str>) -> Result<Task> {
         self.complete_with_learnings(id, result, &[])
     }
@@ -230,11 +250,27 @@ impl<'a> TaskService<'a> {
     /// Complete a task with optional learnings that get attached and bubbled to parent.
     /// Learnings are first added to this task, then bubbled to immediate parent (if any).
     /// This keeps learnings aligned with VCS state - siblings only see learnings after merge.
+    #[allow(dead_code)] // Used by workflow wrappers and tests
     pub fn complete_with_learnings(
         &self,
         id: &TaskId,
         result: Option<&str>,
         learnings: &[String],
+    ) -> Result<Task> {
+        let commit_sha = Self::get_current_commit_sha();
+        self.complete_with_learnings_and_commit_sha(id, result, learnings, commit_sha.as_deref())
+    }
+
+    /// Complete a task with optional learnings and explicit commit SHA provenance.
+    ///
+    /// `commit_sha` is expected to come from the same VCS backend used for completion.
+    /// When omitted, no commit SHA is persisted.
+    pub fn complete_with_learnings_and_commit_sha(
+        &self,
+        id: &TaskId,
+        result: Option<&str>,
+        learnings: &[String],
+        commit_sha: Option<&str>,
     ) -> Result<Task> {
         if !task_repo::task_exists(self.conn, id)? {
             return Err(OsError::TaskNotFound(id.clone()));
@@ -249,10 +285,7 @@ impl<'a> TaskService<'a> {
             learning_repo::add_learning(self.conn, id, content, None)?;
         }
 
-        // Auto-populate commit_sha if VCS is available (Invariant #6)
-        let commit_sha = Self::get_current_commit_sha();
-
-        let mut task = task_repo::complete_task(self.conn, id, result, commit_sha.as_deref())?;
+        let mut task = task_repo::complete_task(self.conn, id, result, commit_sha)?;
 
         // NOTE: Dependency edges are preserved on completion.
         // Readiness is computed from completion state (blocker.completed), not edge removal.
@@ -268,6 +301,7 @@ impl<'a> TaskService<'a> {
         Ok(task)
     }
 
+    #[allow(dead_code)] // Used by complete_with_learnings fallback path
     fn get_current_commit_sha() -> Option<String> {
         // Try to get VCS backend from current directory
         let cwd = std::env::current_dir().ok()?;
@@ -1576,7 +1610,7 @@ mod tests {
             &task.id,
             &UpdateTaskInput {
                 parent_id: Some(milestone_a.id.clone()),
-                    ..Default::default()
+                ..Default::default()
             },
         );
         assert!(matches!(
@@ -1653,7 +1687,7 @@ mod tests {
             &task.id,
             &UpdateTaskInput {
                 parent_id: Some(other_task.id.clone()),
-                    ..Default::default()
+                ..Default::default()
             },
         );
         assert!(matches!(result, Err(OsError::MaxDepthExceeded)));
@@ -2540,5 +2574,107 @@ mod tests {
             "Expected CannotArchiveActive error, got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn test_update_clear_repo_path_on_not_started_task() {
+        let conn = setup_db();
+        let service = TaskService::new(&conn);
+
+        let task = service
+            .create(&CreateTaskInput {
+                description: "Task".to_string(),
+                repo_path: Some("frontend".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let updated = service
+            .update(
+                &task.id,
+                &UpdateTaskInput {
+                    clear_repo_path: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(updated.repo_path, None);
+    }
+
+    #[test]
+    fn test_update_clear_repo_path_after_start_rejected() {
+        let conn = setup_db();
+        let service = TaskService::new(&conn);
+
+        let task = service
+            .create(&CreateTaskInput {
+                description: "Task".to_string(),
+                repo_path: Some("frontend".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        service.start(&task.id).unwrap();
+
+        let result = service.update(
+            &task.id,
+            &UpdateTaskInput {
+                clear_repo_path: true,
+                ..Default::default()
+            },
+        );
+
+        assert!(matches!(result, Err(OsError::InvalidRepoPath { .. })));
+    }
+
+    #[test]
+    fn test_update_clear_repo_path_idempotent_when_already_unset() {
+        let conn = setup_db();
+        let service = TaskService::new(&conn);
+
+        let task = service
+            .create(&CreateTaskInput {
+                description: "Task".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let updated = service
+            .update(
+                &task.id,
+                &UpdateTaskInput {
+                    clear_repo_path: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(updated.repo_path, None);
+    }
+
+    #[test]
+    fn test_update_repo_path_and_clear_repo_path_conflict_rejected() {
+        let conn = setup_db();
+        let service = TaskService::new(&conn);
+
+        let task = service
+            .create(&CreateTaskInput {
+                description: "Task".to_string(),
+                repo_path: Some("frontend".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let result = service.update(
+            &task.id,
+            &UpdateTaskInput {
+                repo_path: Some("backend".to_string()),
+                clear_repo_path: true,
+                ..Default::default()
+            },
+        );
+
+        assert!(matches!(result, Err(OsError::InvalidRepoPath { .. })));
     }
 }

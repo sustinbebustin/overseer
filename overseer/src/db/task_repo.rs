@@ -286,6 +286,10 @@ pub fn update_task(conn: &Connection, id: &TaskId, input: &UpdateTaskInput) -> R
         param_idx += 1;
     }
 
+    if input.clear_repo_path {
+        updates.push("repo_path = NULL".to_string());
+    }
+
     params_vec.push(Box::new(id.clone()));
 
     let sql = format!(
@@ -450,7 +454,6 @@ pub fn clear_bookmark(conn: &Connection, id: &TaskId) -> Result<()> {
     )?;
     Ok(())
 }
-
 
 pub fn get_children(conn: &Connection, parent_id: &TaskId) -> Result<Vec<Task>> {
     let mut stmt = conn.prepare("SELECT * FROM tasks WHERE parent_id = ?1")?;
