@@ -42,3 +42,4 @@ npm/overseer/dist/
 
 # Overseer local DB
 .overseer/
+.claude/
