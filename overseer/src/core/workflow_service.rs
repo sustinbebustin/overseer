@@ -327,10 +327,12 @@ impl<'a> TaskWorkflowService<'a> {
         // Unified stacking semantics: both jj and git get same behavior
         // Checkout first solves git's "cannot delete checked-out branch" error
         if let Some(ref bookmark) = task.bookmark {
-            // Find checkout target: prefer current HEAD, fallback to start_commit
-            let checkout_target = vcs
-                .current_commit_id()
-                .ok()
+            // Find checkout target: prefer base_ref (branch name) to stay attached,
+            // fallback to current HEAD SHA, then start_commit
+            let checkout_target = task
+                .base_ref
+                .clone()
+                .or_else(|| vcs.current_commit_id().ok())
                 .or_else(|| task.start_commit.clone());
 
             if let Some(ref target) = checkout_target {
@@ -499,11 +501,21 @@ impl<'a> TaskWorkflowService<'a> {
                     };
 
                     // Checkout a safe target first (needed for git "cannot delete checked-out branch")
-                    let checkout_target = vcs
-                        .current_commit_id()
-                        .ok()
+                    // Prefer base_ref (branch name) from a descendant in this repo group
+                    // to stay attached to a named branch after cleanup
+                    let checkout_target = descendants
+                        .iter()
+                        .filter(|d| d.repo_path == *repo_path)
+                        .find_map(|d| d.base_ref.clone())
+                        .or_else(|| task.base_ref.clone())
+                        .or_else(|| vcs.current_commit_id().ok())
                         .or_else(|| task.start_commit.clone())
-                        .or_else(|| descendants.iter().find_map(|d| d.start_commit.clone()));
+                        .or_else(|| {
+                            descendants
+                                .iter()
+                                .filter(|d| d.repo_path == *repo_path)
+                                .find_map(|d| d.start_commit.clone())
+                        });
 
                     if let Some(ref target) = checkout_target {
                         if let Err(e) = vcs.checkout(target) {
